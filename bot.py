@@ -7,7 +7,7 @@ TOKEN KESINLIKLE .env / environment'tan gelir, koda GOMMEK YASAK.
   .l (+ txt ek dosya)   -> ek dosyayi indir, deobf et
   .y                    -> yardim
 """
-import os, io, traceback
+import os, io, re, traceback
 import discord
 from discord.ext import commands
 
@@ -88,6 +88,8 @@ async def help_cmd(ctx):
 async def smart_get(ctx, url: str = None):
     if not url:
         return await ctx.send("Kullanim: `.get <url>` — script sayfasini/api linkini ver, icerigini cikarayim.")
+    m = re.search(r"https?://[^\s\"'<>)]+", url)  # loadstring sarmalini sok
+    if m: url = m.group(0)
     try:
         async with ctx.typing():
             data, iz = await bot.loop.run_in_executor(None, deobf.smart_fetch, url)
@@ -125,6 +127,8 @@ async def load_and_deobf(ctx, url: str = None):
             content = await att.read()
             name = att.filename
         elif url:
+            m = re.search(r"https?://[^\s\"'<>)]+", url)  # loadstring(game:HttpGet("URL"))() sarmalini sok
+            if m: url = m.group(0)
             url = deobf.normalize_raw_url(url)
             async with ctx.typing():
                 raw = await bot.loop.run_in_executor(None, deobf.fetch, url)

@@ -83,6 +83,7 @@ def extract_script_from_html(doc: str) -> str | None:
 
 # ---------- TESHIS ----------
 SIGNATURES = [
+    ("WeAreDevs (WRD) obfuscator", [r"wearedevs\.net/obfuscator"]),
     ("Luraph v14 (LPH_ prefix + VM)", [r"LPH_", r"IlIlIlI", r"lPH[A-Za-z0-9_]{2,}"]),
     ("LuaProt (LP_/LP_NOTIFY + XSUB)", [r"LP_[0-9]{6,}", r"LP_NOTIFY", r"LPH\+"]),
     ("Luarmor Superflow", [r"superflow", r"sandbox_args", r"Luarmor"]),
@@ -249,6 +250,87 @@ def follow_luaprot_stub(text: str) -> tuple[str | None, str | None]:
             continue
     return None, "stage-2 node'larina ulasilamadi"
 
+# ---------- WeAreDevs (WRD) v1 obfuscator cozucu (RS3zNQVk'de kanitli) ----------
+
+def _wrd_ev(e: str):
+    e = e.strip()
+    if re.fullmatch(r'[-\d\s()+]+', e):
+        try: return int(eval(e, {"__builtins__": None}, {}))
+        except Exception: return None
+    return None
+
+def wrd_v1(text: str) -> tuple[dict, dict[str, bytes]]:
+    """WRD v1: S karistirilmis-b64 alfabe haritasi + U string tablosu cozme.
+    Cikti: (info, {'wrd_strings.txt','deobf.txt'})"""
+    info: dict = {}
+    if "wearedevs.net/obfuscator" not in text:
+        return info, {}
+    i = text.find("local S={")
+    j = text.find("}", i)
+    if i < 0 or j < 0: return {"hata": "S blogu yok"}, {}
+    blk = text[i:j]
+    S: dict[str, int] = {}
+    for m in re.finditer(r'\["\\(\d{2,3})"\]\s*=\s*([-\d()\s+]+?)(?=[,;]|$)', blk, re.M):
+        v = _wrd_ev(m.group(2))
+        if v is not None and 0 <= v < 64: S[chr(int(m.group(1)))] = v
+    for m in re.finditer(r'([A-Za-z])\s*=\s*([-\d()\s+]+?)(?=[,;])', blk):
+        v = _wrd_ev(m.group(2))
+        if v is not None and 0 <= v < 64: S[m.group(1)] = v
+    info["s_haritasi"] = len(S)
+    if len(S) < 60: return info, {}
+
+    def cdec(s: str) -> bytes:
+        s = s.rstrip("=")
+        v = [S[c] for c in s if c in S]
+        out = bytearray()
+        full = len(v) // 4 * 4
+        for k in range(0, full, 4):
+            a, b, c, d = v[k:k+4]
+            out.append((a << 2) | (b >> 4))
+            out.append(((b & 15) << 4) | (c >> 2))
+            out.append(((c & 3) << 6) | d)
+        rest = v[full:]
+        if len(rest) >= 2:
+            out.append((rest[0] << 2) | (rest[1] >> 4))
+            if len(rest) >= 3:
+                out.append(((rest[1] & 15) << 4) | (rest[2] >> 2))
+        return bytes(out)
+
+    strs = re.findall(r'"((?:\\\d{2,3})+(?:[^"\\]|\\.)*?)"', text)
+    U = [re.sub(r"\\(\d{2,3})", lambda m: chr(int(m.group(1))), s) for s in strs]
+    info["u_tablosu"] = len(U)
+
+    def printable(b: bytes) -> int:
+        if not b: return 0
+        return sum(32 <= x < 127 or x in (10, 13) for x in b) * 100 // len(b)
+
+    decoded = [cdec(u) for u in U]
+    ok = [(k, d) for k, d in enumerate(decoded) if d and printable(d) >= 95]
+    info["acik_string"] = len(ok)
+
+    # string envanteri dokumu
+    lines = ["# WRD v1 STRING ENVANTERI (cozulmus)", f"# U tablosu: {len(U)} | acik: {len(ok)}", ""]
+    for k, d in ok:
+        lines.append(f"[{k:4d}] {d.decode('utf-8', 'replace')}")
+    # govdede \\0dd gecen yerleri cozulmus haliyle inline degistir (bilgi amacli katman)
+    body = text
+    changed = 0
+    for raw, dec in zip(strs, decoded):
+        if not dec: continue
+        t = dec.decode("utf-8", "replace")
+        if printable(dec) >= 95 and len(t) >= 2:
+            lit = '"' + raw + '"'
+            if lit in body:
+                safe_t = t.replace("\\", "\\\\").replace('"', '\\"')
+                body = body.replace(lit, '"' + safe_t + '"', 1)
+                changed += 1
+    info["inline_degisim"] = changed
+    header = "-- [[ DEOBF BOT — WRD v1 katman-1 cozumu ]]\n-- U string tablosu acik(stringler decode edildi); XOR/permute katmani icin Sensei\n"
+    return info, {
+        "wrd_strings.txt": "\n".join(lines).encode(),
+        "deobf.txt": (header + body).encode(),
+    }
+
 # ---------- ANA PIPELINE ----------
 
 def deobf_pipeline(name: str, content: bytes, _depth: int = 0) -> tuple[str, dict[str, bytes]]:
@@ -283,18 +365,28 @@ def deobf_pipeline(name: str, content: bytes, _depth: int = 0) -> tuple[str, dic
             rep.append("   (lisans/HWID kapisi disaridan acilmaz; stub analizi asagida)")
     hits = detect(text)
     rep.append("🏷️ teshis: " + " | ".join(hits))
+    wout: dict = {}
     cur = text
     cur, nh = unhex(cur)
     if nh: rep.append(f"🧬 hex escape cozuldu: {nh:,} adet")
     cur, nb = unbase64_blocks(cur)
     if nb: rep.append(f"🧬 base64 blok cozuldu: {nb} adet")
+    # WRD v1 cozucu (varsa)
+    if "wearedevs.net/obfuscator" in text:
+        winfo, wout = wrd_v1(text)
+        if wout:
+            out.update(wout)
+            rep.append(f"⚔️ WRD v1 KIRILDI: {winfo.get('acik_string')}/{winfo.get('u_tablosu')} string acik, "
+                       f"{winfo.get('inline_degisim')} inline degisim (S:{winfo.get('s_haritasi')}/64)")
+            rep.append("   ciktilar: wrd_strings.txt + deobf.txt (katman-1)")
+            cur = wout["deobf.txt"].decode("utf-8", "replace")
     data, xinfo = extract_xsub(text)
     if data:
         rep.append(f"🎯 XSUB blob ASILDI: {xinfo.get('decoded_bytes'):,} byte (marker {xinfo.get('marker')} @ {xinfo.get('marker_index')}, magic {xinfo.get('magic')})")
         out["payload.bin"] = data
     out["strings.txt"] = dump_strings(cur).encode()
     out["deobf.txt"] = cur.encode()
-    if not data and not nh and not nb and "Bilinmiyor" not in hits[0]:
+    if not data and not nh and not nb and "Bilinmiyor" not in hits[0] and not wout:
         rep.append("ℹ️ Decoder kancasi tutmadi — tam VM cozumu icin Sensei el analizi gerekir (dump dosyalari yine eklendi).")
     rep.append("✅ bitti — ciktilar: deobf.txt" + (", payload.bin" if data else "") + ", strings.txt")
     return "\n".join(rep), out
