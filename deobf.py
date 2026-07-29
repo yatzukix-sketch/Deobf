@@ -22,13 +22,54 @@ def fetch(url: str, timeout: int = 25) -> bytes:
         return r.read()
 
 RAW_HOST_FIX = [
+    # ---- BUYUK LINK RADARI: sayfa URL'sini RAW URL'sine cevirir ----
     (re.compile(r"https?://pastebin\.com/(?!raw/)(\w+)"), r"https://pastebin.com/raw/\1"),
     (re.compile(r"https?://paste\.c-net\.org/(?!raw/)(\w+)"), r"https://paste.c-net.org/raw/\1"),
+    (re.compile(r"https?://gist\.github\.com/([\w-]+)/([0-9a-f]{8,})"), r"https://gist.githubusercontent.com/\1/\2/raw"),
+    (re.compile(r"https?://github\.com/([\w.-]+)/([\w.-]+)/blob/([^/]+)/(.+)"), r"https://raw.githubusercontent.com/\1/\2/\3/\4"),
+    (re.compile(r"https?://gitlab\.com/(.+?)/-/blob/(.+)"), r"https://gitlab.com/\1/-/raw/\2"),
+    (re.compile(r"https?://rentry\.co/([\w-]+)(?:/raw)?/?$"), r"https://rentry.co/\1/raw"),
+    (re.compile(r"https?://rentry\.org/([\w-]+)(?:/raw)?/?$"), r"https://rentry.org/\1/raw"),
+    (re.compile(r"https?://hastebin\.com/(?!raw/)(\w+)"), r"https://hastebin.com/raw/\1"),
+    (re.compile(r"https?://pastefy\.de/([\w-]+)(?:/raw)?/?$"), r"https://pastefy.de/\1/raw"),
+    (re.compile(r"https?://sourceb\.in/([\w-]+)(?:/raw)?/?$"), r"https://sourceb.in/\1/raw"),
+    (re.compile(r"https?://controlc\.com/(?!raw)([0-9a-f]+)"), r"https://controlc.com/raw.php?slug=\1"),
+    (re.compile(r"https?://paste\.ee/p/([\w-]+)"), r"https://paste.ee/r/\1"),
+    (re.compile(r"https?://xhider\.xyz/view/(.+)"), r"https://xhider.xyz/raw/\1"),
 ]
 def normalize_raw_url(u: str) -> str:
+    u = u.strip().strip("<>")
+    if u.endswith("/raw") or "/raw/" in u: return u
     for rx, rep in RAW_HOST_FIX:
         if rx.search(u): return rx.sub(rep, u)
     return u
+
+def smart_fetch(url: str, timeout: int = 25) -> tuple[bytes, str]:
+    """.get motoru: normalize -> UA+Referer'li fetch -> rapor. donen: (icerik, iznotu)"""
+    notes = []
+    u2 = normalize_raw_url(url)
+    if u2 != url: notes.append(f"raw-yol cevirildi: {u2}")
+    ref = "/".join(u2.split("/")[:3]) + "/"
+    req = urllib.request.Request(u2, headers={
+        "User-Agent": UA,
+        "Referer": ref,
+        "Accept": "*/*",
+    })
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            data = r.read()
+            notes.append(f"HTTP {r.status} | {r.headers.get('content-type','?')}")
+            return data, " | ".join(notes)
+    except Exception as e:
+        # ham URL ile son sans
+        if u2 != url:
+            notes.append("raw-yol patladi, orijinal link deneniyor…")
+            req = urllib.request.Request(url, headers={"User-Agent": UA, "Referer": ref})
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                data = r.read()
+                notes.append(f"HTTP {r.status} (orijinal link)")
+                return data, " | ".join(notes)
+        raise RuntimeError(f"fetch basarisiz: {e}")
 
 def extract_script_from_html(doc: str) -> str | None:
     # klasik loader siteleri: <pre>, textarea, veya "loadstring..." iceren ham blok
@@ -45,7 +86,7 @@ SIGNATURES = [
     ("Luraph v14 (LPH_ prefix + VM)", [r"LPH_", r"IlIlIlI", r"lPH[A-Za-z0-9_]{2,}"]),
     ("LuaProt (LP_/LP_NOTIFY + XSUB)", [r"LP_[0-9]{6,}", r"LP_NOTIFY", r"LPH\+"]),
     ("Luarmor Superflow", [r"superflow", r"sandbox_args", r"Luarmor"]),
-    ("PSU Obfuscator", [r"PSU|psu_", r"protected by PSU"]),
+    ("PSU Obfuscator", [r"protected by PSU", r"PSU_\w{8,}", r"psu_obfuscator"]),
     ("MoonSec v3", [r"moonsec", r"MoonSec", r"\]\]\]\s*;?\s*local"]),
     ("Hex escape duvari (\\x..)", [r"(?:\\x[0-9a-fA-F]{2}){8,}"]),
     ("Base64 blok(cu)", [r"[A-Za-z0-9+/]{80,}={0,2}"]),
@@ -184,9 +225,33 @@ def dump_strings(text: str, top: int = 60) -> str:
     lines += (f"- {s[:160]}" for s in out[:top])
     return "\n".join(lines)
 
+# ---------- LuaProt V2 CHAIN-FOLLOW (2. sahnenin izini surer) ----------
+
+def follow_luaprot_stub(text: str) -> tuple[str | None, str | None]:
+    """LuaProt V2 stub -> (stage2_url, notu). Kapali lisans kapisini da raporlar."""
+    if "luaprot.net/api/v2/loader/get" not in text: return None, None
+    sid = re.search(r'local f,c,v="(\d{6,})"', text)
+    if not sid: return None, None
+    GATES = ("Hwid", "blacklist", "not found", "denied", "key", "license", "Kick")
+    for n in ["eu-1", "us-1", "eu-2"]:
+        u = f"https://{n}.luaprot.net/api/v2/loader/get?key=x&scriptId={sid.group(1)}"
+        try:
+            d = fetch(u, timeout=20)
+            body = d[:600].decode("utf-8", "replace")
+            if len(d) > 3000 and not any(g in body for g in GATES):
+                return u, "stage-2 payload yakalandi"
+            m = re.search(r"\[=\[(.+?)\]=\]", body)
+            reason = m.group(1) if m else body[:80]
+            if "loader failed" in body.lower():
+                continue
+            return u, f"LISANS KAPISI (stage-2 kapali): {reason}"
+        except Exception:
+            continue
+    return None, "stage-2 node'larina ulasilamadi"
+
 # ---------- ANA PIPELINE ----------
 
-def deobf_pipeline(name: str, content: bytes) -> tuple[str, dict[str, bytes]]:
+def deobf_pipeline(name: str, content: bytes, _depth: int = 0) -> tuple[str, dict[str, bytes]]:
     out: dict[str, bytes] = {}
     try:
         text = content.decode("utf-8")
@@ -198,6 +263,24 @@ def deobf_pipeline(name: str, content: bytes) -> tuple[str, dict[str, bytes]]:
         ex = extract_script_from_html(text)
         if ex: text = ex; rep.append(f"✅ script blogu cekildi ({len(text):,} char)")
         else: rep.append("❌ sayfadan ham script cikaramadim")
+    # LuaProt V2 stub -> stage-2 takip (loader'in kendi public akisi)
+    if _depth == 0:
+        nxt, notu = follow_luaprot_stub(text)
+        if nxt and notu and "yakalandi" in notu:
+            rep.append(f"⛓️ LuaProt V2 stub yakalandi — STAGE-2 izi suruluyor:\n   {nxt}")
+            try:
+                d2 = fetch(nxt, timeout=30)
+                rep.append(f"📥 stage-2 indi: {len(d2):,} byte — zincir devam ediyor")
+                rep2, out2 = deobf_pipeline("stage2-" + name, d2, _depth=1)
+                merged: dict[str, bytes] = {"stage1_" + "deobf.txt": text.encode()}
+                merged.update(out2)
+                rep.append(rep2)
+                return "\n".join(rep), merged
+            except Exception as e:
+                rep.append(f"⚠️ stage-2 cekilemedi: {e}")
+        elif notu:
+            rep.append(f"⛓️ LuaProt V2 stub tespit edildi → 🔒 {notu}")
+            rep.append("   (lisans/HWID kapisi disaridan acilmaz; stub analizi asagida)")
     hits = detect(text)
     rep.append("🏷️ teshis: " + " | ".join(hits))
     cur = text

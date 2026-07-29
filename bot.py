@@ -35,7 +35,7 @@ if not TOKEN:
 
 intents = discord.Intents.default()
 intents.message_content = True
-bot = commands.Bot(command_prefix=".", intents=intents, help_command=None)
+bot = commands.Bot(command_prefix=[".", "!"], intents=intents, help_command=None)
 
 MAX_FETCH = 15 * 1024 * 1024   # 15MB guvenlik limiti
 MAX_DISCORD_MSG = 1800
@@ -57,15 +57,61 @@ async def on_ready():
     print(f"[+] Deobf Bot online: {bot.user}")
 
 
-@bot.command(name="y")
-async def yardim(ctx):
-    await ctx.send(
-        "```\nDeobf Bot v1.0\n"
-        ".l <url>        -> linkteki raw scripti fetchle + deobf et\n"
-        ".l (txt ekle)   -> ek dosyayi deobf et\n"
-        "Cikti: deobf.txt + strings.txt (+ payload.bin varsa)\n"
-        "Not: agir Luraph/LuaProt VM cozumu Sensei tarafindan yapilir.\n```"
-    )
+HELP_TEXT = (
+    "```\n"
+    "=========== DEOBF BOT v1.1 ===========\n"
+    "Prefix: .  ve  !  (ikisi de calisir)\n"
+    "\n"
+    ".help               -> bu menu (komutlar + amaclari)\n"
+    ".l <url>            -> script linkini fetchle + TAM deobf\n"
+    "                       (teshis + hex/b64 coz + XSUB blob + strings)\n"
+    ".l (txt/lua ekle)   -> ek dosyayi deobf et\n"
+    ".get <url>          -> AKILLI CEKICI: raw-yol radari + tarayici maskesi\n"
+    "                       ile scripti soker; HTML ise icerdeki kodu koparir,\n"
+    "                       onizleme + ham dosya atar (deobf YOK)\n"
+    "\n"
+    "RADAR (otomatik raw'a cevrilen hostlar):\n"
+    "  pastebin, paste.c-net, gist, github blob, gitlab, rentry,\n"
+    "  hastebin, pastefy, sourcebin, controlc, paste.ee, xhider\n"
+    "\n"
+    "Cikti: deobf.txt + strings.txt (+ payload.bin varsa)\n"
+    "Not: agir Luraph/LuaProt VM cozumu Sensei tarafindan yapilir.\n"
+    "```"
+)
+
+@bot.command(name="help", aliases=["y", "yardim", "h"])
+async def help_cmd(ctx):
+    await ctx.send(HELP_TEXT)
+
+
+@bot.command(name="get")
+async def smart_get(ctx, url: str = None):
+    if not url:
+        return await ctx.send("Kullanim: `.get <url>` — script sayfasini/api linkini ver, icerigini cikarayim.")
+    try:
+        async with ctx.typing():
+            data, iz = await bot.loop.run_in_executor(None, deobf.smart_fetch, url)
+        if len(data) > 8 * 1024 * 1024:
+            return await ctx.send(f"⚠️ Icerik 8MB ustu ({len(data):,}B).")
+        text = data.decode("utf-8", "replace")
+        # HTML ise icerdeki kodu kopar
+        if "<html" in text[:2000].lower() or "<!doc" in text[:2000].lower():
+            ex = deobf.extract_script_from_html(text)
+            if ex:
+                text, veri = ex, "HTML icinden script blogu sokuldu"
+            else:
+                veri = "HTML ama script blogu bulunamadi, sayfa oldugu gibi verildi"
+        else:
+            veri = "ham icerik"
+        preview = text[:1000].replace("`", "'")
+        fname = (url.split("/")[-1] or "script").split("?")[0][:40] or "script"
+        if "." not in fname: fname += ".txt"
+        await ctx.send(
+            f"```\n🎯 .get SONUC\niz: {iz}\nmod: {veri}\nboyut: {len(text):,} char\n\n— ONIZLEME —\n{preview}\n```"
+        )
+        await ctx.send(file=discord.File(io.BytesIO(text.encode()), filename=fname))
+    except Exception as e:
+        await ctx.send(f"💥 .get patladi: `{type(e).__name__}: {e}`")
 
 
 @bot.command(name="l")
