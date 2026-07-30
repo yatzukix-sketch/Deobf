@@ -1,60 +1,83 @@
 # -*- coding: utf-8 -*-
-"""SENSEI-AI v1.5 — kurall tabanli script analiz dedektifi (LLM'siz, saf stdlib).
-analyze(name, text, ek_havuz=None) -> karar sozlugu.
-Obf'lu input icin CAGIRAN taraf decoded metni ek_havuz olarak vermeli
-(bot v1.4 motorunun ciktilari) — boylece sifreli scriptler de okunur."""
+"""SENSEI-AI v2.0 — kanit-disiplinli script analiz dedektifi (LLM'siz, saf stdlib).
 
+v2 degisiklikleri (sallama onleyici):
+  * Her amac tespiti ikiye ayrildi:
+      - GUC (guclu kod izi): gercekten CALISAN icra satiri (orn noclip -> CanCollide=false)
+      - SOZ (adi gecti): buton yazisi, baslik, rastgele string -> "kanit yok" diye isitilenir
+  * Yorum satirlari (-- ...) taramadan CIKARILIR.
+  * Her bulgu/tespit yanina kanit satiri (snippet + satir no) tasir.
+  * Remote isimleri icin anlam sozlugu (parry->savas, buy->satin alma...).
+analyze(name, text, ek_havuz="") -> karar sozlugu (amac_kesin / amac_gecen / bulgular+kanit)
+"""
 import re
 
-VERS = "1.5"
+VERS = "2.0"
 
-# (regex, kategori, puan, aciklama)
+# -------------------- supheli desenler (skor icin) --------------------
 DESENLER = [
-    # --- VERI KACIRMA / LOGGER ---
     (r"discord(?:app)?\.com/api/webhooks", "EXFIL", 35, "Discord webhook (log/cerez iade kanali)"),
-    (r"(?:grabify\.link|iplogger\.|iplogger\.com|webhook\.site|hookbin|canarytokens|pipedream\.net|requestbin)", "EXFIL", 45, "IP logger / honeypot endpoint!"),
+    (r"grabify\.link|iplogger|webhook\.site|hookbin|canarytokens|pipedream\.net|requestbin", "EXFIL", 45, "IP logger / honeypot endpoint!"),
     (r"https?://\d{1,3}(?:\.\d{1,3}){3}(?::\d+)?", "EXFIL", 18, "cplak IP'ye HTTP (supheli sunucu)"),
-    (r"bit\.ly|tinyurl|cutt\.ly|is\.gd|shorte\.st|bc\.vc|linkvertise", "EXFIL", 12, "link kisaltma (hedefi sakliyor)"),
-    # --- HESAP / CEREZ HIRSIZLIGI ---
-    (r"ROBLOSECURITY|getcookie|Cookies", "HESAP", 60, "CEREZ/ROBLOSECURITY hirsizligi — GIRME!"),
-    (r"LocalPlayer\.UserId.*http|http.*UserId", "HESAP", 20, "UserId'nin dis sunucuya sizma izi"),
-    # --- SATIN ALMA TUZAGI ---
-    (r"PromptPurchase|PromptProductPurchase|MarketplaceService.*Prompt", "PARA", 25, "oyun ici satin alma penceresi aciyor"),
-    # --- KALICILIK / MANIPULASYON ---
+    (r"bit\.ly|tinyurl|cutt\.ly|is\.gd|shorte\.st|bc\.vc", "EXFIL", 12, "link kisaltma (hedefi sakliyor)"),
+    (r"ROBLOSECURITY|getcookie|Cookies\b", "HESAP", 60, "CEREZ/ROBLOSECURITY hirsizligi — GIRME!"),
+    (r"LocalPlayer\.UserId.*HttpGet|HttpGet.*UserId", "HESAP", 20, "UserId'nin dis sunucuya sizma izi"),
+    (r"PromptPurchase|PromptProductPurchase", "PARA", 25, "oyun ici satin alma penceresi aciyor"),
     (r"hookfunction|hookmetamethod", "MANIP", 25, "fonksiyon hook'u (davranis degistirme)"),
     (r"getconnections|getnamecallmethod", "MANIP", 12, "executor seviye dinleme/manipulasyon"),
-    (r"getgenv\s*\(", "MANIP", 6, "global ortam erisimi"),
+    (r"getgenv\s*\(\s*\)", "MANIP", 6, "global ortam erisimi"),
     (r"gethui|CoreGui", "MANIP", 8, "korunakli CoreGui'ye saklanma"),
     (r"setfpscap|fpscap", "MANIP", 3, "FPS degistirme"),
-    # --- REMOTE / SUNUCU ETKILESIMI ---
-    (r"FireServer\s*\(", "REMOTE", 4, "sunucuya remote atisy (FireServer)"),
+    (r"FireServer\s*\(", "REMOTE", 4, "sunucuya remote atisi (FireServer)"),
     (r"InvokeServer\s*\(", "REMOTE", 4, "sunucudan remote cagrisi (InvokeServer)"),
-    (r"Unreliable", "REMOTE", 2, "guvencesiz remote kanali"),
-    # --- YIKICI / YAN ETKI ---
     (r"LocalPlayer:Kick|:Kick\(", "YIKICI", 18, "Kick() — seni oyundan atabilir"),
-    (r"TeleportService.*Teleport", "YIKICI", 15, "baska sunucuya irtica (scam-hop?)"),
+    (r"TeleportService[^\\n]*Teleport", "YIKICI", 15, "baska sunucuya irtica (scam-hop?)"),
     (r"require\s*\(\s*\d{5,}", "YIKICI", 12, "require(assetid) — arka kapi zinciri olabilir"),
-    (r"game:GetService\(['\"]TeleportService", "YIKICI", 8, "TeleportService kullanimi"),
-    # --- OBF / PAKETLEME ---
     (r"wearedevs\.net/obfuscator", "OBF", 10, "WRD obfuscator (katmanli sifreleme)"),
-    (r"luaprot\.net|LuaProt", "OBF", 15, "LuaProt lisans stub'i (kod sunucuda kilitli)"),
+    (r"luaprot", "OBF", 15, "LuaProt lisans stub'i (kod sunucuda kilitli)"),
     (r'LPH[+|]', "OBF", 10, "XSUB/Luraph turevi paketleme"),
-    (r"\\x[0-9a-fA-F]{2}\\x[0-9a-fA-F]{2}\\x[0-9a-fA-F]{2}", "OBF", 6, "hex-kaçışlı string yigini"),
+    (r"\\x[0-9a-fA-F]{2}\\x[0-9a-fA-F]{2}\\x[0-9a-fA-F]{2}", "OBF", 6, "hex-kacisli string yigini"),
 ]
 
-# amac kurallari: (regex, cikti)  — ilk basklarin onceligi var
+# -------------------- amac tespiti: GUC (idam-derece kanit) vs SOZ --------------------
+# (etiket, [guclu regexler], [soz regexler])
 AMAC_KURALLARI = [
-    (r"Tamper Detected|Digite a key|key aqui|get the key|key system|KeyFrame", "🔑 Key-sistemli panel (linkvertise key duvarki)"),
-    (r"aimbot|aim lock|triggerbot|silenthit", "🎯 Aimbot / aim-assist"),
-    (r"\besp\b|wallhack|chams|tracer", "👁️ ESP / wallhack"),
-    (r"noclip", "🧱 Noclip (duvardan gecis)"),
-    (r"\bfly\b|cframe speed|speedhack", "🪽 Ucmak/hiz hacki"),
-    (r"AntiQueda|anti[- ]?fall|antifall", "🪂 Anti-dusme korumasi"),
-    (r"infinite yield|cmarketplace admin|admin commands", "👑 Admin komut paneli"),
-    (r"fps ?boost|remove textures|potato", "🥔 FPS artirici"),
-    (r"auto ?farm|autoclick|auto ?collect", "🌾 Oto-farm / auto-click"),
-    (r"hitbox|reach", "🥊 Hitbox genisletme"),
-    (r"trail|pet|egg|hatch", "🥚 Pet/yumurta oyunu ozelligi"),
+    ("🔑 Key-sistemli panel",
+     [r"Tamper Detected", r"Digite a key|key aqui|KeyFrame", r"FocusLost[^\n]*[Kk]ey", r"[Kk]ey\s*=="],
+     [r"key ?system|linkvertise", r"get the key"]),
+    ("🥊 Hitbox genisletme",
+     [r"(?:Head|RootPart|HumanoidRootPart)[\w.]*\.Size\s*=", r"\.Size\s*=\s*Vector3\.new\(\s*(?:[5-9]\d|\d{3})"],
+     [r"hitbox", r"\breach\b"]),
+    ("🧱 Noclip (duvardan gecis)",
+     [r"CanCollide\s*=\s*[Ff]alse"],
+     [r"noclip"]),
+    ("🪽 Ucma (fly)",
+     [r"BodyVelocity|VectorForce|BodyGyro|BodyThrust", r"FlyEnabled|Flying\s*=\s*true"],
+     [r"\bfly\b|\bflying\b", r"fly ?hack"]),
+    ("💨 Hiz hacki",
+     [r"WalkSpeed\s*=\s*(?:[2-9]\d|\d{3,})", r"CFrame\s*=\s*[^%\n]*speed"],
+     [r"speed ?hack|cframe speed|\bhigher speed\b"]),
+    ("🎯 Aimbot / aim-assist",
+     [r"mousemoverel", r"Mouse\.Hit|mouse2click", r"[Aa]im[Ll]ock\s*="],
+     [r"aimbot|aim assist|triggerbot|silenthit"]),
+    ("👁️ ESP / wallhack",
+     [r"Drawing\.new", r"BoxHandleAdornment|SphereHandleAdornment", r"Highlight\b[^\n]*FillColor|Instance\.new\(\s*['\"]Highlight"],
+     [r"\besp\b|wallhack|chams|tracer"]),
+    ("🪂 Anti-dusme korumasi",
+     [r"AntiQueda|anti[- ]?queda", r"antifall|anti[- ]?fall"],
+     []),
+    ("👑 Admin komut paneli",
+     [r"infinite[\s_-]?yield", r"require\(\s*\d{5,}[^\n]*admin"],
+     [r"admin commands|admin script"]),
+    ("🥔 FPS artirici",
+     [r"setfpscap|fpscap\(", r"Destroying:FindFirstChild\(\s*['\"]Texture"],
+     [r"fps ?boost|remove textures|potato mode"]),
+    ("🌾 Oto-farm / auto-click",
+     [r"VirtualInputManager", r"mouse1click|fireclickdetector|fireproximityprompt", r"VirtualUser"],
+     [r"auto ?farm|autoclick|auto ?collect|auto ?attack"]),
+    ("🥚 Pet/yumurta ozelligi",
+     [r"hatch[^\n]*pet|pet[^\n]*hatch", r"egg[^\n]*opening"],
+     [r"egg|hatch|\bpet\b"]),
 ]
 
 ZARARSIZ_IZLER = [
@@ -65,81 +88,165 @@ ZARARSIZ_IZLER = [
     (r"players?\.localplayer", -2, "yerel oyuncu erisimi (normal)"),
 ]
 
+# uzaktan kumanda adindan amac tahmini
+REMOTE_IPUCU = [
+    (r"parry|block|deflect|reflect", "🗡️ savas blok (blade ball tarzi)"),
+    (r"combat|attack|swing|punch|melee|slash|hit", "🗡️ saldiri/dovus"),
+    (r"gun|shoot|fire|reload|ammo|aim|bullet", "🔫 silah/nisansal"),
+    (r"buy|purchase|shop|market|sell|checkout", "🛒 satin alma/satis"),
+    (r"save|data|load|profile|stats", "💾 veri kaydi"),
+    (r"trade|gift", "🔄 takas"),
+    (r"redeem|code", "🎁 kod sistemi"),
+    (r"report|moder|ban|kick|admin", "🛡️ moderasyon/admin"),
+    (r"teleport|place|join|queue", "🚀 teleport/sunucu"),
+    (r"pet|hatch|egg", "🥚 pet sistemi"),
+    (r"dash|sprint|roll|dodge|slide", "💨 hareket"),
+    (r"damage|health|heal|regen", "❤️ can/hasar"),
+    (r"coin|cash|money|gold|gem", "💰 odul/para"),
+    (r"chat|message|notification", "💬 bildirim"),
+]
+
+
+# -------------------- yardimcilar --------------------
+def _yorumsuz(text: str):
+    """Satir satir: -- ve --[[ satir-ici blok yorumlari atar. (kod + stringler kalir)"""
+    ret = []
+    for i, L in enumerate(text.splitlines(), 1):
+        L = re.sub(r"--\[\[.*?\]\]", " ", L)
+        L = re.sub(r"--.*$", "", L)
+        ret.append((i, L))
+    return ret
+
+
+def _kanit(lines, rx, n=2, uz=90):
+    """ilk n farkli satirdan kisaltilmis kanit snippet'i"""
+    out = []
+    rxp = re.compile(rx, re.I)
+    for tag, L in lines:
+        if L.strip() and rxp.search(L):
+            sn = re.sub(r"\s+", " ", L.strip())
+            if len(sn) > uz:
+                sn = sn[:uz - 3] + "..."
+            out.append((tag, sn))
+            if len(out) >= n:
+                break
+    return out
+
+
+def _say_lines(lines, rx, cap=30):
+    rxp = re.compile(rx, re.I)
+    return sum(1 for _, L in lines[:6000] if rxp.search(L)) if lines else 0
+
+
+# -------------------- ana fonksiyon --------------------
 def analyze(name: str, text: str, ek_havuz: str = "") -> dict:
-    """Huristic analiz. ek_havuz: varsa decoded stringler (obf cozumu)."""
-    havuz = text + "\n" + ek_havuz
+    havuz = text + ("\n" + ek_havuz if ek_havuz else "")
     low = havuz.lower()
+
     R: dict = {
         "skor": 0, "bulgular": [], "uzaklar": [], "urller": [],
-        "servisler": [], "amac": [], "notlar": [], "tur": "duz lua",
+        "servisler": [], "amac": [], "amac_kesin": [], "amac_gecen": [],
+        "notlar": [], "tur": "duz lua", "vers": VERS,
     }
 
     turler = []
-    if "wearedevs.net/obfuscator" in havuz: turler.append("WRD v1 obfuscator")
-    if "luaprot" in low: turler.append("LuaProt lisans stub")
-    if "LPH" in text[:2000] or "Luraph" in text[:2000]: turler.append("XSUB/Luraph turevi")
+    if "wearedevs.net/obfuscator" in havuz:
+        turler.append("WRD v1 obfuscator")
+    if "luaprot" in low:
+        turler.append("LuaProt lisans stub")
+    if "LPH" in text[:2000] or "Luraph" in text[:2000]:
+        turler.append("XSUB/Luraph turevi")
     satirs = text.count("\n") + 1
-    if satirs <= 3 and len(text) > 5000: turler.append("minifiye (tek satir)")
-    if not turler: turler.append("duz lua")
-    R["tur"] = " + ".join(turler)
+    if satirs <= 3 and len(text) > 5000:
+        turler.append("minifiye (tek satir)")
+    R["tur"] = " + ".join(turler) if turler else "duz lua"
+    R["satir"] = satirs
 
+    # kanit havuzlari: yorumsuz kod satirlari + (varsa) cozulmus string satirlari
+    kod = _yorumsuz(text)
+    dize = [("dize", L) for L in ek_havuz.splitlines()] if ek_havuz else []
+    havuz_lines = [("kod L%d" % i, L) for i, L in kod] + dize
+
+    # --- skor: desenler YORUMSUZ havuzda, her biri kanitla ---
     toplam = 0
     for rx, kat, puan, acik in DESENLER:
-        hits = re.findall(rx, havuz, re.I if kat not in ("OBF",) else 0)
+        lines = re.findall_rx = None
+        hits = [L for _, L in havuz_lines if re.search(rx, L, re.I if kat != "OBF" else 0)]
         if not hits:
             continue
         n = len(hits)
         cap = puan + min(n - 1, 6) * (2 if puan >= 10 else 1)
         toplam += cap
+        kts = _kanit(havuz_lines, rx, 2)
         et = f"{acik} (x{n})" if n > 1 else acik
-        R["bulgular"].append((cap, kat, et))
+        R["bulgular"].append((cap, kat, et, kts))
     R["bulgular"].sort(key=lambda x: -x[0])
 
-    ind = 0
     for rx, puan, acik in ZARARSIZ_IZLER:
         if re.search(rx, havuz, re.I):
-            ind += puan
+            toplam += puan
             R["notlar"].append(f"↩️ {acik} ({puan})")
-    toplam += ind
 
-    for rx, cikti in AMAC_KURALLARI:
-        if re.search(rx, havuz, re.I):
-            R["amac"].append(cikti)
-        if len(R["amac"]) >= 3:
-            break
+    # --- amac: GUC vs SOZ ayrimi ---
+    for etiket, gucler, sozler in AMAC_KURALLARI:
+        kanitlar = []
+        for grx in gucler:
+            kanitlar += _kanit(havuz_lines, grx, 2)
+        if kanitlar:
+            R["amac_kesin"].append((etiket, kanitlar[:2]))
+            continue
+        adet = 0
+        for srx in sozler:
+            adet += _say_lines(havuz_lines, srx)
+        if adet:
+            R["amac_gecen"].append((etiket, adet))
+    R["amac"] = ([e for e, _ in R["amac_kesin"]]
+                 + [f"{e} (? — {n}x)" for e, n in R["amac_gecen"]])
     if not R["amac"]:
-        if "ScreenGui" in havuz: R["amac"].append("🖼️ GUI hub'u (panel kuruyor)")
-        elif "loadstring" in havuz and satirs < 10: R["amac"].append("📦 sadece yukleyici/stub")
-        else: R["amac"].append("❓ belirsiz amaç (kucuk/yardimci kod?)")
+        if re.search(r"ScreenGui", havuz):
+            R["amac"].append("🖼️ GUI hub'u (panel kuruyor)")
+        elif "loadstring" in havuz and satirs < 10:
+            R["amac"].append("📦 sadece yukleyici/stub")
+        else:
+            R["amac"].append("❓ belirsiz amac (kucuk/yardimci kod?)")
 
+    # --- url ler (yorum dahil tam havuz; sayfanin baglantisi da bilgidir) ---
     for u in sorted(set(re.findall(r"https?://[^\s\"'<>\)\]]+", havuz)))[:8]:
         kisa = re.sub(r"https?://", "", u)[:90]
         dav = "🚨" if ("webhook" in u or "gg/" in u) else ("⚠️" if "http://" in u else "🌐")
         R["urller"].append(f"{dav} {kisa}")
 
+    # --- remote envanteri + anlam sozlugu ---
     rem = {}
     for m in re.finditer(r'(?:WaitForChild|FindFirstChild)\(\s*["\']([A-Za-z0-9_ .\-]{2,40})["\']', havuz):
-        w = m.group(1)
+        w = m.group(1).strip()
         if len(w) >= 3:
             rem[w] = rem.get(w, 0) + 1
     for m in re.finditer(r"Remotes[.:]([A-Za-z0-9_]+)", havuz):
         rem[m.group(1)] = rem.get(m.group(1), 0) + 1
-    for k, v in sorted(rem.items(), key=lambda x: -x[1])[:8]:
-        R["uzaklar"].append(f"`{k}` ×{v}")
+    for m in re.finditer(r'(?:FireServer|InvokeServer)\(\s*["\']([A-Za-z0-9_ .\-]{2,30})["\']', havuz):
+        w = m.group(1).strip()
+        rem[w + " (arg)"] = rem.get(w + " (arg)", 0) + 1
+    def _ipucu(isim):
+        base = isim.replace(" (arg)", "")
+        for rx, anlam in REMOTE_IPUCU:
+            if re.search(rx, base, re.I):
+                return anlam
+        return None
+    for k2, v2 in sorted(rem.items(), key=lambda x: -x[1])[:9]:
+        R["uzaklar"].append({"isim": k2, "adet": v2, "ipucu": _ipucu(k2)})
+
     fires = len(re.findall(r"FireServer\s*\(", havuz))
     invs = len(re.findall(r"InvokeServer\s*\(", havuz))
-    if fires or invs:
-        R["uzaklar"].append(f"FireServer ×{fires} | InvokeServer ×{invs}")
+    R["fires"], R["invs"] = fires, invs
 
     for m in sorted(set(re.findall(r'GetService\(\s*["\']([A-Za-z0-9]+)["\']', havuz)))[:10]:
         R["servisler"].append(m)
 
     R["skor"] = max(0, min(100, toplam))
-    if R["skor"] >= 80:   R["band"] = 3
-    elif R["skor"] >= 50: R["band"] = 2
-    elif R["skor"] >= 20: R["band"] = 1
-    else:                 R["band"] = 0
+    R["band"] = 3 if R["skor"] >= 80 else 2 if R["skor"] >= 50 else 1 if R["skor"] >= 20 else 0
     return R
+
 
 BAND_BILGI = [
     ("🟢 GUVENLI — temiz gorunuyor", 0x2ECC71, "Sensei cikmazi yok, yine de goz ucuyla bak."),
@@ -147,6 +254,7 @@ BAND_BILGI = [
     ("🟠 RISKLI — dikkat!", 0xE67E22, "Ciddi sinyaller var. Alternatifini bul ya da Sensei'ye danis."),
     ("🔴 TEHLIKELI — uzak dur!", 0xE74C3C, "Hesabini/verini kacirmayi hedefliyor olabilir. Calistirma!"),
 ]
+
 
 def gauge(skor: int, n: int = 10) -> str:
     dolu = round(skor / 100 * n)
