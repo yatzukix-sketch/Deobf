@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Deobf Bot v1.6 — Discord komut botu
+Deobf Bot v1.7 — Discord komut botu
 TOKEN KESINLIKLE .env / environment'tan gelir, koda GOMMEK YASAK.
   .l <url/dosya>   -> deobf pipeline (WRD 938/938 + katman-2 haritasi)
-  .aly <url/dosya> -> SENSEI-AI v2 kanit-disiplinli analiz (sallama YOK)
+  .aly <url/dosya> -> SENSEI-AI v2.3 kanit-disiplinli + ZINCIR takibi
+                      (icinde HttpGet/loadstring linkleri varsa onlari da ceker tarar!)
   .sor <soru>      -> son analize dair soru-cevap
   .sohbet          -> kisa sureligine konusma modu (kapat: 'cik')
   .diff <a> <b>    -> iki scripti karsilastir (gizli degisiklik yakalama)
@@ -54,6 +55,7 @@ SOHBET_SURESI = 300  # sn, her mesajda +120 yenilenir
 
 TIPS = [
     "💡 .aly artik kanit-disiplinli: sadece ADI GECEN ozellikler ayrilir, iddia edilmez.",
+    "💡 Zincir takibi: loader linklerinin ardindaki kodu da .aly tarar — 2. linkteki webhook kacamaz.",
     "💡 .diff ile guncellenen hub'dan WEBHOOK cikarsa, onceki surumune don!",
     "💡 LuaProt = lisans duvari; asil kod uzak sunucuda, izini GOLGE surer.",
     "💡 WRD katman-2 haritasi = wrd_katman2.txt (876 site).",
@@ -94,8 +96,8 @@ async def on_ready():
 @bot.command(name="help", aliases=["y", "yardim", "h"])
 async def help_cmd(ctx):
     e = discord.Embed(
-        title="⚔️ DEOBF BOT v1.6 — komut karargahi",
-        description="Kisla Akademisi'nin sahadaki eli. Prefix: `.` veya `!`\n🆕 **kanit-disiplinli analiz + analiz uzerinden sohbet**",
+        title="⚔️ DEOBF BOT v1.7 — komut karargahi",
+        description="Kisla Akademisi'nin sahadaki eli. Prefix: `.` veya `!`\n🆕 **kanit-disiplinli analiz + sohbet + ZINCIR link takibi**",
         color=0x9B59B6,
     )
     e.add_field(name="🧪 .l <url/dosya>", value=(
@@ -103,9 +105,9 @@ async def help_cmd(ctx):
         "WRD katman-1 (938/938 string, runtime-dogrulamali) + 1300+ inline +\n"
         "katman-2 haritasi (wrd_katman2.txt)"), inline=False)
     e.add_field(name="🕵️ .aly <url/dosya>", value=(
-        "SENSEI-AI v2 kanit-disiplinli analiz: ozellik tespiti artik KANIT gerektirir.\n"
-        "Kelime gorup 'noclip var!' demiyoruz — calisan kod izini gosteriyoruz.\n"
-        "Kesin olmayanlar 'adi gecenler' rafinda, boynumuz kildan ince 😄"), inline=False)
+        "SENSEI-AI v2.3: kanit-disiplinli (sallama YOK) + **ZINCIR TAKIBI** 🔗\n"
+        "Script icindeki HttpGet/loadstring linklerini bizzat ceker, onlari da tarar\n"
+        "(derinlik 2, ust sinir 4 link). Loader arkasina webhook saklayan korksun 😄"), inline=False)
     e.add_field(name="💬 .sor <soru> / .sohbet", value=(
         ".aly sonrasi bota soru sor: 'güvenli mi?', 'hitbox var mı?', 'remote'lar ne yapıyor?'\n"
         "`.sohbet` = 5dk konusma modu (kapatmak icin `cik` yaz)."), inline=False)
@@ -189,9 +191,12 @@ async def load_and_deobf(ctx, url: str = None):
         await ctx.send(f"💥 patladik: `{type(ex).__name__}: {ex}` (log'a yazdim)")
 
 
-# -------------------- .aly  (SENSEI-AI v2) --------------------
-def _aly_embed(name, text, R: dict, ek: str):
+# -------------------- .aly  (SENSEI-AI v2.3 + zincir) --------------------
+def _aly_embed(name, text, R: dict, ek: str, zincir=None):
     karar_lbl, renk, karar_acik = analyzer.karar(R)
+    if zincir and any(z["g"] >= 40 for z in zincir):
+        karar_acik = karar_acik + " ⚠️ **ZINCIRDE supheli alt-link saptandi!** Bak: zincir rafı."
+        renk = min(renk, 0xE67E22) if renk == 0x2ECC71 else renk
     g, h = R.get("g_skor", R["skor"]), R.get("h_skor", R["skor"])
     e = discord.Embed(title=f"🕵️ SENSEI-AI Analiz — {name[:60]}",
                       description=(f"### {karar_lbl}\n_{karar_acik}_\n"
@@ -232,6 +237,19 @@ def _aly_embed(name, text, R: dict, ek: str):
         e.add_field(name="📡 remote izleri (+ amac tahmini)", value="\n".join(sat)[:1024], inline=False)
     if R["urller"]:
         e.add_field(name="🌐 dis iletisim", value="\n".join(R["urller"][:6])[:1024], inline=False)
+    if zincir:
+        sat = []
+        for z in zincir[:6]:
+            if z["karar"].startswith("❌"):
+                dav = "❌"
+            elif z["g"] >= 40:
+                dav = "🚨"
+            elif z["g"] >= 20 or z["h"] >= 70:
+                dav = "🟣"
+            else:
+                dav = "✅"
+            sat.append(f"{dav} {z['url'][:58]}\n   → {z['karar']} (🛡%{z['g']} 🎮%{z['h']})")
+        e.add_field(name="🔗 ZINCIR linkleri (bizzat cekilip tarandi)", value="\n".join(sat)[:1024], inline=False)
     e.set_footer(text=f"{_rcs(Q_SONUC)} | ⚖️ huristiktir, %100 kanit degildir | 💬 soru sor: .sor  konus: .sohbet")
     return e
 
@@ -273,10 +291,50 @@ async def aly_cmd(ctx, url: str = None):
                 ek_not = "🧬 obfuscator cozuldu, decoded metin tarandi"
             except Exception:
                 ek_not = "⚠️ obf cozucu patladi, sadece ham metin tarandi"
+        # ---- v1.7 ZINCIR: icerideki HttpGet/loadstring linklerini de cek+tara ----
+        zincir = []
+        incelenen = set()
+        bekleyen = analyzer.bul_zincir_linkleri(text + "\n" + ek_havuz)
+        while bekleyen and len(zincir) < 4:
+            u = bekleyen.pop(0)
+            if u in incelenen:
+                continue
+            incelenen.add(u)
+            try:
+                async with ctx.typing():
+                    data, _iz = await bot.loop.run_in_executor(None, deobf.smart_fetch, u)
+                if len(data) > 5 * 1024 * 1024:
+                    raise ValueError("5MB ustu")
+                alt = data.decode("utf-8", "replace")[:1_000_000]
+                ek_alt = ""
+                if "wearedevs.net/obfuscator" in alt or "luaprot" in alt.lower() or "LPH" in alt[:2000]:
+                    try:
+                        _, o2 = await bot.loop.run_in_executor(
+                            None, deobf.deobf_pipeline, u[-40:], data[:1_000_000])
+                        ek_alt = "\n".join(o2[a][:120000].decode("utf-8", "replace")
+                                           for a in ("wrd_strings.txt", "strings.txt", "deobf.txt") if a in o2)
+                    except Exception:
+                        ek_alt = ""
+                Rz = analyzer.analyze(u.split("/")[-1][:50] or "alt-script", alt, ek_alt)
+                lbl_z, _, _ = analyzer.karar(Rz)
+                zincir.append({"url": u, "karar": lbl_z.split("—")[0].strip(),
+                               "g": Rz.get("g_skor", 0), "h": Rz.get("h_skor", 0)})
+                ek_havuz += f"\n-- @@ZINCIR {u}\n" + alt[:120000]
+                if ek_alt:
+                    ek_havuz += "\n" + ek_alt[:60000]
+                for u2 in analyzer.bul_zincir_linkleri(alt):
+                    if u2 not in incelenen:
+                        bekleyen.append(u2)
+            except Exception as ex3:
+                zincir.append({"url": u, "karar": f"❌ alinamadi ({type(ex3).__name__})", "g": 0, "h": 0})
+        if zincir:
+            ok_no = sum(1 for z in zincir if not z["karar"].startswith("❌"))
+            ek_not = (ek_not + "\n" if ek_not else "") + \
+                     f"🔗 zincir: {ok_no}/{len(zincir)} alt-link ayrica tarandi"
         R = analyzer.analyze(name, text, ek_havuz)
-        await ctx.send(embed=_aly_embed(name, text, R, ek_not))
+        await ctx.send(embed=_aly_embed(name, text, R, ek_not, zincir))
         # sohbet icin hafizaya al (kanal basina son analiz)
-        SONS[ctx.channel.id] = {"R": R, "name": name, "ts": time.time(),
+        SONS[ctx.channel.id] = {"R": R, "name": name, "ts": time.time(), "zincir": zincir,
                                 "kaynak": text[:80000], "ek": ek_havuz[:60000]}
         STATS["aly"] += 1
     except Exception as ex:
@@ -345,7 +403,7 @@ def _sohbet_ctx(ctx):
     bagim = SONS.get(ctx.channel.id)
     if not bagim:
         return None
-    return {"R": bagim["R"], "name": bagim["name"],
+    return {"R": bagim["R"], "name": bagim["name"], "zincir": bagim.get("zincir", []),
             "kaynak": bagim["kaynak"], "ek": bagim["ek"]}
 
 

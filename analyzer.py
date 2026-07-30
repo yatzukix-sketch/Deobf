@@ -12,7 +12,33 @@ analyze(name, text, ek_havuz="") -> karar sozlugu (amac_kesin / amac_gecen / bul
 """
 import re
 
-VERS = "2.2"
+VERS = "2.3"
+
+# zincir takibi icin: bu hostlardaki linkler izlenmez (davet/sosyal linktir, kod degildir)
+ATLA_HOST = ("discord.gg", "discord.com", "discordapp.com", "youtube.com", "t.me",
+             "twitter.com", "x.com", "example")
+
+# ancak HTTP-cagri yapan satirlardaki url'ler "zincir linki" sayilir
+_ZINCIR_YAKICI = re.compile(r"HttpGet|HttpGetAsync|loadstring|request\s*\(", re.I)
+
+
+def bul_zincir_linkleri(havuz: str, maks: int = 4) -> list:
+    """Metinde HttpGet/loadstring/request cagrisiyla cekilen linkleri bulur.
+    Her url degil, GETIRILEN kod adayi olanlar."""
+    out = []
+    for L in havuz.splitlines()[:9000]:
+        if "http" not in L or not _ZINCIR_YAKICI.search(L):
+            continue
+        for u in re.findall(r"https?://[^\s\"'<>\)\]]+", L):
+            u = u.rstrip(".,;")
+            host = re.sub(r"https?://", "", u).split("/")[0].lower()
+            if any(h and h in host for h in ATLA_HOST):
+                continue
+            if u not in out:
+                out.append(u)
+                if len(out) >= maks:
+                    return out
+    return out
 
 # -------------------- supheli desenler (skor icin) --------------------
 DESENLER = [
@@ -50,9 +76,12 @@ AMAC_KURALLARI = [
      ["@desync"],
      [r"\bdesync\b"]),
     ("🥊 Hitbox genisletme",
-     [r"\b(?:Head|RootPart|HumanoidRootPart)(?:\.[\w.]+)?\.Size\s*=\s*Vector3",
-      r"\.Size\s*=\s*Vector3\.new\(\s*(?:[5-9]\d|\d{3})"],
+     ["@hitbox"],
      [r"hitbox", r"\breach\b"]),
+    ("🗺️ Gizli platform (havada yurume/vucut-pad)",
+     [r"\bPlayerMapPart\b", r"MapPart\s*=", r"createPlatform",
+      r"\.Position\s*=\s*[^%\n]*-\s*Vector3\.new\(\s*0?\s*,\s*(?:1\d|[2-9]\d|\d{3})"],
+     []),
     ("🧱 Noclip (duvardan gecis)",
      ["@noclip"],
      [r"noclip"]),
@@ -159,6 +188,32 @@ def _penkere_hit(kod, idx, rx, back=10, ahead=3):
     return re.search(rx, "\n".join(L for _, L in kod[lo:hi]), re.I) is not None
 
 
+def _norm_kanit(i, L, uz=90):
+    sn = re.sub(r"\s+", " ", L.strip())
+    return ("kod L%d" % i, sn[:uz])
+
+
+def _hitbox_kanit(kod):
+    """Vucut parcasi BOYUT DEGISTIRME = hitbox. GUI UDim2 ve YENI yaratilan
+    dummy/platform parcalari (Instance.new penceresi) ele."""
+    out = []
+    rx_govde = re.compile(r"\b(?:Head|RootPart|HumanoidRootPart)(?:\.[\w.]+)?\.Size\s*=\s*Vector3", re.I)
+    rx_buyuk = re.compile(r"\.Size\s*=\s*Vector3\.new\(\s*(?:[2-9]\d|\d{3,})", re.I)
+    for idx, (i, L) in enumerate(kod):
+        if rx_govde.search(L):
+            out.append(_norm_kanit(i, L))
+        elif rx_buyuk.search(L):
+            if _penkere_hit(kod, idx, r"Instance\.new", back=12, ahead=6):
+                continue  # yeni uretilen parca-platform, hitbox degil
+            out.append(_norm_kanit(i, L))
+        if len(out) >= 2:
+            break
+    return out
+
+
+OZEL_DEDEKT["@hitbox"] = _hitbox_kanit
+
+
 def _noclip_kanit(kod):
     """CanCollide=false -> gercek noclip ise kanittir.
     Yeni yaratilan dummy parcalarin property blogunu ele (Instance.new penceresi),
@@ -167,12 +222,11 @@ def _noclip_kanit(kod):
     for idx, (i, L) in enumerate(kod):
         if not re.search(r"CanCollide\s*=\s*[Ff]alse", L):
             continue
-        if _penkere_hit(kod, idx, r"Instance\.new", back=12):
-            continue  # yeni yaratilan dummy parca; noclip degil
+        if _penkere_hit(kod, idx, r"Instance\.new|createPlatform|enableMap|MapPart", back=12, ahead=6):
+            continue  # yeni yaratilan dummy/platform parca; noclip degil
         if not _penkere_hit(kod, idx, r"Character|GetDescendants|DescendantAdded|Humanoid|Players"):
             continue  # baglam yoksa kanit sayilmaz
-        sn = re.sub(r"\s+", " ", L.strip())[:90]
-        out.append(("kod L%d" % i, sn))
+        out.append(_norm_kanit(i, L))
         if len(out) >= 2:
             break
     return out

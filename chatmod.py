@@ -7,7 +7,7 @@ None donerse = anlamadim, bot uzerinden bakabilir.
 import re
 import analyzer
 
-VERS = "1.1"
+VERS = "1.2"
 
 OZELLIK_ESLESME = [
     (r"hitbox", "hitbox"),
@@ -123,6 +123,25 @@ def cevap(soru: str, ctx: dict) -> str:
             return "🌐 Dis iletisim: hic url bulunamadi (temiz isaret) ✅"
         return "🌐 **Bulunan url'ler:**\n" + "\n".join(R["urller"][:8]) + \
                "\n🚨 = webhook suphesi, ⚠️ = sifresiz http"
+
+    # ---- zincir linkleri (v1.7) ----
+    if re.search(r"zincir|alt ?link|[iı]cerideki link|ba[sş]ka link|diger link", q):
+        zincir = ctx.get("zincir") or []
+        if not zincir:
+            return ("🔗 Bu analizde zincir linki bulunamadi (HttpGet/loadstring ile cekilen url yoktu). "
+                    "Ya script kendi kendine yetiyor ya da linkler sifreli 😎")
+        sat = []
+        for z in zincir[:6]:
+            if z["karar"].startswith("❌"):
+                dav = "❌"
+            elif z["g"] >= 40:
+                dav = "🚨"
+            elif z["g"] >= 20 or z["h"] >= 70:
+                dav = "🟣"
+            else:
+                dav = "✅"
+            sat.append(f"{dav} {z['url'][:58]}\n  → {z['karar']} (🛡%{z['g']} 🎮%{z['h']})")
+        return "🔗 **Zincir raporu (bizzat cekilip tarandi):**\n" + "\n".join(sat)
 
     # ---- obfuscator ----
     if re.search(r"obfus|[sş]ifre|katman|koruma|luaprot|wrd|hangi", q):
