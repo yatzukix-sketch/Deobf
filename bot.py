@@ -191,9 +191,12 @@ async def load_and_deobf(ctx, url: str = None):
 
 # -------------------- .aly  (SENSEI-AI v2) --------------------
 def _aly_embed(name, text, R: dict, ek: str):
-    baslik, renk, sahis = analyzer.BAND_BILGI[R["band"]]
+    karar_lbl, renk, karar_acik = analyzer.karar(R)
+    g, h = R.get("g_skor", R["skor"]), R.get("h_skor", R["skor"])
     e = discord.Embed(title=f"🕵️ SENSEI-AI Analiz — {name[:60]}",
-                      description=f"### {baslik}\n{analyzer.gauge(R['skor'])}  **%{R['skor']} risk skoru**\n_{sahis}_",
+                      description=(f"### {karar_lbl}\n_{karar_acik}_\n"
+                                   f"🛡️ hesap-guvenlik riski {analyzer.gauge(g)} **%{g}**\n"
+                                   f"🎮 hile gucu {analyzer.gauge(h)} **%{h}**"),
                       color=renk)
     # KANITLI tespitler: ustune yemin ederiz :)
     if R["amac_kesin"]:

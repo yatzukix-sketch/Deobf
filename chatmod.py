@@ -5,8 +5,9 @@ ctx = {"R": analyze() sozlugu|None, "name": str, "kaynak": str, "ek": str}
 None donerse = anlamadim, bot uzerinden bakabilir.
 """
 import re
+import analyzer
 
-VERS = "1.0"
+VERS = "1.1"
 
 OZELLIK_ESLESME = [
     (r"hitbox", "hitbox"),
@@ -74,7 +75,9 @@ def cevap(soru: str, ctx: dict) -> str:
         return ("Bu kanalda henuz .aly analizi yok; once `.aly <url/dosya>` calistir, "
                 "sonra bana danis. (Genel sorular `selam`, `kimsin` vs.)")
 
-    band_lbl, _, tavsiye = __import__("analyzer").BAND_BILGI[R["band"]]
+    karar_lbl, _renk, karar_acik = analyzer.karar(R)
+    g_skor = R.get("g_skor", R["skor"])
+    h_skor = R.get("h_skor", R["skor"])
 
     # ---- guvenlik karari ----
     if re.search(r"g[üu]venli|safe|vir[üu]s|rat|trojan|ban|kork|kullanay[ıi]m|[cç]al[ıi][sş]t[ıi]ray[ıi]m|zarar|risk", q):
@@ -85,7 +88,8 @@ def cevap(soru: str, ctx: dict) -> str:
         if "obfuscator" in R["tur"].lower() or "LuaProt" in R["tur"]:
             extra = ("\n⚠️ Tur obf'lu; cozemedigimiz kisim olabilir — temiz dese bile "
                      "garanti yok, main hesapta deneme!")
-        return (f"{band_lbl} (skor **%{R['skor']}**)\n_{tavsiye}_\n"
+        return (f"{karar_lbl}\n_{karar_acik}_\n"
+                f"🛡️ hesap-guvenlik riski: **%{g_skor}** | 🎮 hile gucu: **%{h_skor}**\n"
                 + ("\nEn agir sinyaller:\n" + "\n".join(satirlar) if satirlar else
                    "\nAgir bir sinyal gormedim (ama bak kanit ≠ garanti).")
                 + (f"\nKanıtlı özellik: {n_kesin} adet — `ne yapıyor?` diye sor." if n_kesin else "")

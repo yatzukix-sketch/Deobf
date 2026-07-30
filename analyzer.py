@@ -12,7 +12,7 @@ analyze(name, text, ek_havuz="") -> karar sozlugu (amac_kesin / amac_gecen / bul
 """
 import re
 
-VERS = "2.0"
+VERS = "2.2"
 
 # -------------------- supheli desenler (skor icin) --------------------
 DESENLER = [
@@ -43,13 +43,18 @@ DESENLER = [
 # (etiket, [guclu regexler], [soz regexler])
 AMAC_KURALLARI = [
     ("🔑 Key-sistemli panel",
-     [r"Tamper Detected", r"Digite a key|key aqui|KeyFrame", r"FocusLost[^\n]*[Kk]ey", r"[Kk]ey\s*=="],
+     [r"Tamper Detected", r"Digite a key|key aqui|KeyFrame", r"FocusLost[^\n]*[Kk]ey",
+      r"[Kk]ey\s*==\s*[\"'][A-Za-z0-9_\-]{8,}[\"']"],
      [r"key ?system|linkvertise", r"get the key"]),
+    ("🌀 Desync / CFrame konum manipulasyonu",
+     ["@desync"],
+     [r"\bdesync\b"]),
     ("🥊 Hitbox genisletme",
-     [r"(?:Head|RootPart|HumanoidRootPart)[\w.]*\.Size\s*=", r"\.Size\s*=\s*Vector3\.new\(\s*(?:[5-9]\d|\d{3})"],
+     [r"\b(?:Head|RootPart|HumanoidRootPart)(?:\.[\w.]+)?\.Size\s*=\s*Vector3",
+      r"\.Size\s*=\s*Vector3\.new\(\s*(?:[5-9]\d|\d{3})"],
      [r"hitbox", r"\breach\b"]),
     ("🧱 Noclip (duvardan gecis)",
-     [r"CanCollide\s*=\s*[Ff]alse"],
+     ["@noclip"],
      [r"noclip"]),
     ("🪽 Ucma (fly)",
      [r"BodyVelocity|VectorForce|BodyGyro|BodyThrust", r"FlyEnabled|Flying\s*=\s*true"],
@@ -73,8 +78,14 @@ AMAC_KURALLARI = [
      [r"setfpscap|fpscap\(", r"Destroying:FindFirstChild\(\s*['\"]Texture"],
      [r"fps ?boost|remove textures|potato mode"]),
     ("🌾 Oto-farm / auto-click",
-     [r"VirtualInputManager", r"mouse1click|fireclickdetector|fireproximityprompt", r"VirtualUser"],
+     [r"VirtualInputManager", r"mouse1click|fireclickdetector|fireproximityprompt"],
      [r"auto ?farm|autoclick|auto ?collect|auto ?attack"]),
+    ("😴 Anti-AFK (VirtualUser)",
+     [r"VirtualUser", r"CaptureController"],
+     [r"antiafk|anti[- ]afk"]),
+    ("⚔️ Blade Ball auto-parry kurulumu",
+     [r"\bCurrentBall\b"],
+     [r"blade ball|roweball"]),
     ("🥚 Pet/yumurta ozelligi",
      [r"hatch[^\n]*pet|pet[^\n]*hatch", r"egg[^\n]*opening"],
      [r"egg|hatch|\bpet\b"]),
@@ -138,6 +149,52 @@ def _say_lines(lines, rx, cap=30):
     return sum(1 for _, L in lines[:6000] if rxp.search(L)) if lines else 0
 
 
+# -------------------- ozel dedektorler: baglam gerektiren tespitler --------------------
+OZEL_DEDEKT = {}
+
+
+def _penkere_hit(kod, idx, rx, back=10, ahead=3):
+    lo = max(0, idx - back)
+    hi = min(len(kod), idx + ahead + 1)
+    return re.search(rx, "\n".join(L for _, L in kod[lo:hi]), re.I) is not None
+
+
+def _noclip_kanit(kod):
+    """CanCollide=false -> gercek noclip ise kanittir.
+    Yeni yaratilan dummy parcalarin property blogunu ele (Instance.new penceresi),
+    karakter/oyuncu baglami iste."""
+    out = []
+    for idx, (i, L) in enumerate(kod):
+        if not re.search(r"CanCollide\s*=\s*[Ff]alse", L):
+            continue
+        if _penkere_hit(kod, idx, r"Instance\.new", back=12):
+            continue  # yeni yaratilan dummy parca; noclip degil
+        if not _penkere_hit(kod, idx, r"Character|GetDescendants|DescendantAdded|Humanoid|Players"):
+            continue  # baglam yoksa kanit sayilmaz
+        sn = re.sub(r"\s+", " ", L.strip())[:90]
+        out.append(("kod L%d" % i, sn))
+        if len(out) >= 2:
+            break
+    return out
+
+
+OZEL_DEDEKT["@noclip"] = _noclip_kanit
+
+
+def _desync_kanit(kod):
+    """game __index hook'u + desync izi birlikteyse CFrame desync/anti-hit."""
+    hook = ds = None
+    for i, L in kod:
+        if hook is None and re.search(r"hookmetamethod\s*\(\s*\w+\s*,\s*[\"']__index[\"']", L):
+            hook = ("kod L%d" % i, re.sub(r"\s+", " ", L.strip())[:90])
+        if ds is None and re.search(r"desync", L, re.I):
+            ds = ("kod L%d" % i, re.sub(r"\s+", " ", L.strip())[:90])
+    return [hook, ds] if (hook and ds) else []
+
+
+OZEL_DEDEKT["@desync"] = _desync_kanit
+
+
 # -------------------- ana fonksiyon --------------------
 def analyze(name: str, text: str, ek_havuz: str = "") -> dict:
     havuz = text + ("\n" + ek_havuz if ek_havuz else "")
@@ -169,6 +226,7 @@ def analyze(name: str, text: str, ek_havuz: str = "") -> dict:
 
     # --- skor: desenler YORUMSUZ havuzda, her biri kanitla ---
     toplam = 0
+    kat_toplam: dict = {}
     for rx, kat, puan, acik in DESENLER:
         lines = re.findall_rx = None
         hits = [L for _, L in havuz_lines if re.search(rx, L, re.I if kat != "OBF" else 0)]
@@ -180,6 +238,7 @@ def analyze(name: str, text: str, ek_havuz: str = "") -> dict:
         kts = _kanit(havuz_lines, rx, 2)
         et = f"{acik} (x{n})" if n > 1 else acik
         R["bulgular"].append((cap, kat, et, kts))
+        kat_toplam[kat] = kat_toplam.get(kat, 0) + cap
     R["bulgular"].sort(key=lambda x: -x[0])
 
     for rx, puan, acik in ZARARSIZ_IZLER:
@@ -191,7 +250,11 @@ def analyze(name: str, text: str, ek_havuz: str = "") -> dict:
     for etiket, gucler, sozler in AMAC_KURALLARI:
         kanitlar = []
         for grx in gucler:
-            kanitlar += _kanit(havuz_lines, grx, 2)
+            dfn = OZEL_DEDEKT.get(grx)
+            if dfn:
+                kanitlar += dfn(kod)
+            else:
+                kanitlar += _kanit(havuz_lines, grx, 2)
         if kanitlar:
             R["amac_kesin"].append((etiket, kanitlar[:2]))
             continue
@@ -213,7 +276,7 @@ def analyze(name: str, text: str, ek_havuz: str = "") -> dict:
     # --- url ler (yorum dahil tam havuz; sayfanin baglantisi da bilgidir) ---
     for u in sorted(set(re.findall(r"https?://[^\s\"'<>\)\]]+", havuz)))[:8]:
         kisa = re.sub(r"https?://", "", u)[:90]
-        dav = "🚨" if ("webhook" in u or "gg/" in u) else ("⚠️" if "http://" in u else "🌐")
+        dav = "🚨" if "webhook" in u else ("💬" if "gg/" in u else ("⚠️" if "http://" in u else "🌐"))
         R["urller"].append(f"{dav} {kisa}")
 
     # --- remote envanteri + anlam sozlugu ---
@@ -245,6 +308,11 @@ def analyze(name: str, text: str, ek_havuz: str = "") -> dict:
 
     R["skor"] = max(0, min(100, toplam))
     R["band"] = 3 if R["skor"] >= 80 else 2 if R["skor"] >= 50 else 1 if R["skor"] >= 20 else 0
+
+    # --- iki eksen: hesap-guvenlik riski (g) vs hile gucu (h) ---
+    GUV = {"EXFIL", "HESAP", "PARA"}
+    R["g_skor"] = max(0, min(100, sum(v for k, v in kat_toplam.items() if k in GUV)))
+    R["h_skor"] = max(0, min(100, sum(v for k, v in kat_toplam.items() if k not in GUV)))
     return R
 
 
@@ -259,3 +327,27 @@ BAND_BILGI = [
 def gauge(skor: int, n: int = 10) -> str:
     dolu = round(skor / 100 * n)
     return "▰" * dolu + "▱" * (n - dolu)
+
+
+GUV_SINIF = {"EXFIL", "HESAP", "PARA"}
+
+
+def karar(R: dict):
+    """iki eksenli karar: hirsizlik/guvenlik (g) vs hile gucu (h) -> (baslik, renk, aciklama)"""
+    g = R.get("g_skor", R.get("skor", 0))
+    h = R.get("h_skor", R.get("skor", 0))
+    if g >= 80:
+        return ("🔴 TEHLİKELİ — hesap/veri riski yüksek!", 0xE74C3C,
+                "Hirsizlik/sizinti desenleri agir. Calistirma, alternatife bak!")
+    if g >= 40:
+        return ("🟠 RİSKLİ — sızıntı sinyali var", 0xE67E22,
+                "Dis iletisim/hesap sinifli desenler mevcut. Goz kirpmadan incele.")
+    if h >= 70:
+        return ("🟣 GÜÇLÜ HİLE — ban riski yüksek; hırsızlık izi YOK", 0x9B59B6,
+                "Executor-manipulasyon araclari (hook/desync vb.) dolu ama veri kacirma deseni bulunamadi. "
+                "Tehlike degilse de Roblox ban riski ciddi — main hesapta dusunerek.")
+    if h >= 40:
+        return ("🟡 ORTA GÜÇ — temkinli gez", 0xF1C40F,
+                "Bazi manipulasyon desenleri var; hirsizlik sinifinda temiz gorunuyor.")
+    return ("🟢 GÖRÜNÜRDE SAKİN", 0x2ECC71,
+            "Ne hirsizlik ne de guc manipulasyonu sinyali. Yine de goz ucuyla kontrol.")
