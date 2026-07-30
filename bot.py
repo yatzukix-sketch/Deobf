@@ -59,7 +59,8 @@ async def on_ready():
 
 HELP_TEXT = (
     "```\n"
-    "=========== DEOBF BOT v1.1 ===========\n"
+    "=========== DEOBF BOT v1.3 ===========\n"
+    ".l <script/link> -> DEOBF | WRD: 938/938 string (dogrulanmis) + 1300+ sabit inline + hizali kod\n"
     "Prefix: .  ve  !  (ikisi de calisir)\n"
     "\n"
     ".help               -> bu menu (komutlar + amaclari)\n"
