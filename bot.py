@@ -1,19 +1,20 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Deobf Bot v1.7 — Discord komut botu
+Deobf Bot v1.8 — Discord komut botu
 TOKEN KESINLIKLE .env / environment'tan gelir, koda GOMMEK YASAK.
   .l <url/dosya>   -> deobf pipeline (WRD 938/938 + katman-2 haritasi)
   .aly <url/dosya> -> SENSEI-AI v2.3 kanit-disiplinli + ZINCIR takibi
-                      (icinde HttpGet/loadstring linkleri varsa onlari da ceker tarar!)
   .sor <soru>      -> son analize dair soru-cevap
   .sohbet          -> kisa sureligine konusma modu (kapat: 'cik')
+  .rt <url/dosya>  -> RUNTIME deobf: Prometheus mock-trace motoru
+                      (kendi lua51'iyle; katman-2 plaintext avcisi!)
   .diff <a> <b>    -> iki scripti karsilastir (gizli degisiklik yakalama)
   .get <url>       -> akilli cekici
   .istatistik      -> oturum sayaclari
   .y               -> bu menu
 """
-import os, io, re, time, random, difflib, traceback
+import os, io, re, time, random, difflib, traceback, subprocess, tempfile, shutil
 import discord
 from discord.ext import commands
 
@@ -45,7 +46,7 @@ bot = commands.Bot(command_prefix=[".", "!"], intents=intents, help_command=None
 MAX_FETCH = 15 * 1024 * 1024
 MAX_DISCORD_MSG = 1800
 START_TS = time.monotonic()
-STATS = {"l": 0, "get": 0, "aly": 0, "diff": 0, "sor": 0}
+STATS = {"l": 0, "get": 0, "aly": 0, "diff": 0, "sor": 0, "rt": 0}
 URL_RX = re.compile(r'https?://[^\s"\'<>()]+')
 
 # .aly sonrasi sohbet altyapisi
@@ -56,6 +57,7 @@ SOHBET_SURESI = 300  # sn, her mesajda +120 yenilenir
 TIPS = [
     "💡 .aly artik kanit-disiplinli: sadece ADI GECEN ozellikler ayrilir, iddia edilmez.",
     "💡 Zincir takibi: loader linklerinin ardindaki kodu da .aly tarar — 2. linkteki webhook kacamaz.",
+    "💡 Statik motor mu kirdi? `.rt` yaz — Prometheus dumper'i lua51'imizle sahnede (yine de goz ucuyla).",
     "💡 .diff ile guncellenen hub'dan WEBHOOK cikarsa, onceki surumune don!",
     "💡 LuaProt = lisans duvari; asil kod uzak sunucuda, izini GOLGE surer.",
     "💡 WRD katman-2 haritasi = wrd_katman2.txt (876 site).",
@@ -111,6 +113,10 @@ async def help_cmd(ctx):
     e.add_field(name="💬 .sor <soru> / .sohbet", value=(
         ".aly sonrasi bota soru sor: 'güvenli mi?', 'hitbox var mı?', 'remote'lar ne yapıyor?'\n"
         "`.sohbet` = 5dk konusma modu (kapatmak icin `cik` yaz)."), inline=False)
+    e.add_field(name="⚡ .rt <url/dosya>", value=(
+        "RUNTIME deobf: Prometheus mock-trace motoru (kendi lua51'iyle kutudan cikar).\n"
+        "Statik motorun durdurdugu WRD katman-2 sifreli stringleri plaintext'e cevirir.\n"
+        "Emülasyondur — kismi rekonstruksiyon cikabilir; kaniti .aly ile teyit et!"), inline=False)
     e.add_field(name="🆚 .diff <link1> <link2>", value=(
         "Iki script surumunu karsilastirir: benzerlik % + eklenen riskli desenler.\n"
         "Hub guncellendi diye arkaniza webcam loglayici kacirmalarina son."), inline=False)
@@ -342,6 +348,121 @@ async def aly_cmd(ctx, url: str = None):
         await ctx.send(f"💥 .aly patladi: `{type(ex).__name__}: {ex}`")
 
 
+# -------------------- .rt (RUNTIME deobf - Prometheus mock-trace motoru) --------------------
+_HERE = os.path.dirname(os.path.abspath(__file__))
+
+
+def _prom_bul() -> str:
+    """prom/ vendor klasorunu akillica bulur: once prom/ dener, yoksa repo kokune de bakar
+    (kullanicilar dosyalari duz yuklemis olabilir 😄). yoksa ''."""
+    for cand in (os.path.join(_HERE, "prom"), _HERE):
+        if os.path.exists(os.path.join(cand, "deobfuscator.py")) and os.path.exists(os.path.join(cand, "lua51")):
+            return cand
+    return ""
+
+
+def _prom_hazir() -> bool:
+    """vendor dosyalari + lua51 varsa (ve calistirilabilir izinli) True."""
+    d = _prom_bul()
+    if not d:
+        return False
+    try:
+        os.chmod(os.path.join(d, "lua51"), 0o755)  # zip/github'dan gelirse izin biti ucmus olur
+    except Exception:
+        pass
+    return True
+
+
+def _rt_kos(name: str, content: bytes) -> dict:
+    """Senkron calisan runtime-deobf (Prometheus mock-trace). bot executor'da cagrilir."""
+    d = tempfile.mkdtemp(prefix="rt_")
+    try:
+        prom = _prom_bul()
+        if not prom:
+            return {"boom": False, "sure": 0.0, "rc": -1, "hata": "prom vendor bulunamadi", "trace": ""}
+        hedef = os.path.join(d, re.sub(r"[^\w.\-]", "_", name or "hedef.lua")[:60])
+        with open(hedef, "wb") as f:
+            f.write(content)
+        env = dict(os.environ)
+        env["LUA51_EXECUTABLE"] = os.path.join(prom, "lua51")
+        t0 = time.time()
+        r = subprocess.run(["python3" if os.name != "nt" else "python",
+                            os.path.join(prom, "deobfuscator.py"), hedef],
+                           env=env, capture_output=True, text=True, timeout=120)
+        sure = time.time() - t0
+        out = {"sure": sure, "rc": r.returncode,
+               "hata": (r.stderr or "").strip()[-260:], "trace": r.stdout or ""}
+        deb, rep = hedef + ".deobf.lua", hedef + ".report.txt"
+        if os.path.exists(deb):
+            data = open(deb, "rb").read()
+            t = data.decode("utf-8", "replace")
+            # rekonstruksiyon kalitesi olcumleri
+            IzBelge = {}
+            for k in ("print(", "Instance.new", "GetService", "FireServer",
+                      "InvokeServer", "http", "isfile(", "writefile(",
+                      "readfile(", "Color3", "UDim2", "loadstring"):
+                n = t.count(k)
+                if n:
+                    IzBelge[k] = n
+            out["deobf"], out["satir"], out["izler"] = data, t.count("\n") + 1, IzBelge
+        if os.path.exists(rep):
+            out["report"] = open(rep, "rb").read()
+        out["boom"] = "attempt to" in (r.stderr or "")
+        return out
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+@bot.command(name="rt", aliases=["runtime", "prom"])
+async def rt_cmd(ctx, url: str = None):
+    if not _prom_hazir():
+        return await ctx.send("⚠️ `prom/` vendor klasoru eksik yahut lua51 yok — GitHub repo kokune `prom/` klasorunu de yukle (deobfuscator.py, trace_to_lua.py, lua51).")
+    try:
+        name, content = None, None
+        if ctx.message.attachments:
+            att = ctx.message.attachments[0]
+            if att.size > 5 * 1024 * 1024:
+                return await ctx.send(f"⚠️ Dosya cok buyuk ({att.size:,}B). limit 5MB.")
+            content, name = await att.read(), att.filename
+        elif url:
+            m = URL_RX.search(url)
+            if m: url = m.group(0)
+            url = deobf.normalize_raw_url(url)
+            async with ctx.typing():
+                raw = await bot.loop.run_in_executor(None, deobf.fetch, url)
+            if len(raw) > 5 * 1024 * 1024:
+                return await ctx.send("⚠️ Icerik cok buyuk.")
+            content, name = raw, url.split("/")[-1] or "hedef"
+        else:
+            return await ctx.send("Kullanim: `.rt <url>` veya dosya ekle — RUNTIME deobf (mock-trace; katman-2 plaintext avcisi yani KALDIRAÇ 😎)")
+        async with ctx.typing():
+            R = await bot.loop.run_in_executor(None, _rt_kos, name, content or b"")
+        # kart cikar
+        if "deobf" not in R:
+            e = discord.Embed(title="💥 RUNTIME deobf basaramadi", color=0xE74C3C,
+                              description=(f"📄 {name[:60]}\n⏱️ {R['sure']:.1f}sn | rc {R['rc']}\n"
+                                           f"son hata:\n```\n{(R['hata'] or '(kayitli hata yok)')[:700]}\n```"
+                                           "\nNot: mock-env anti-emülasyonla kravga etmis olabilir — `.l` statik terse doner."))
+            return await ctx.send(embed=e)
+        izler = R["izler"]
+        on_sira = ", ".join(f"`{k}x{v}`" for k, v in sorted(izler.items(), key=lambda x: -x[1])[:8]) or "satsiz"
+        boom_not = "\n⚠️ mock-env yarıda çakıldı: çıktı tamamından eksik olabilir (yine de cozulenler gercek)" if R["boom"] else ""
+        e = discord.Embed(title=f"⚡ RUNTIME deobf — {name[:50]}", color=0xE91E63,
+                          description=(f"⏱️ {R['sure']:.1f}sn | cikti: **{R['satir']:,} satir** rekonstruksiyon\n"
+                                       f"iz seti: {on_sira}{boom_not}\n\n"
+                                       f"📎 `.deobf.lua` okunakli metin, `trace raporu` ham log (agirysa atlandı)."))
+        e.set_footer(text="⚖️ Kelime uyarisi: emülasyondu, %100 sadakat garanti degil — ogrendiklerini .aly ile teyit et!")
+        await ctx.send(embed=e)
+        await ctx.send(file=discord.File(io.BytesIO(R["deobf"]), filename=(name[:40] or "deobf") + ".deobf.lua"))
+        rep = R.get("report")
+        if rep and len(rep) <= 3 * 1024 * 1024:
+            await ctx.send(file=discord.File(io.BytesIO(rep), filename=(name[:40] or "trace") + ".trace.txt"))
+        STATS["rt"] += 1
+    except Exception as ex:
+        print(traceback.format_exc(limit=3))
+        await ctx.send(f"💥 .rt patladi: `{type(ex).__name__}: {ex}` (log'a yazdim)")
+
+
 # -------------------- .diff (Sensei fikri!) --------------------
 @bot.command(name="diff", aliases=["karsilastir"])
 async def diff_cmd(ctx, urlA: str = None, urlB: str = None):
@@ -393,7 +514,8 @@ async def stat_cmd(ctx):
                       description=(f"⏱️ ayakta: **{dk}dk {sn}sn**\n"
                                    f"🧪 .l → **{STATS['l']}** | 🕵️ .aly → **{STATS['aly']}**\n"
                                    f"🆚 .diff → **{STATS['diff']}** | 🎯 .get → **{STATS['get']}**\n"
-                                   f"💬 .sor → **{STATS['sor']}** | 🗣️ aktif sohbet: **{len(SOHBET)}**"))
+                                   f"💬 .sor → **{STATS['sor']}** | ⚡ .rt → **{STATS['rt']}**\n"
+                                   f"🗣️ aktif sohbet: **{len(SOHBET)}**"))
     e.set_footer(text=_rcs(TIPS))
     await ctx.send(embed=e)
 
