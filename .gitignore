@@ -1,0 +1,32 @@
+# ---- Gizli bilgiler (ASLA commit etme) ----
+.env
+.env.*
+*.token
+secrets.*
+!*.env.example
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+
+# ---- Deobf bot çıktıları (runtime üretilen) ----
+deobf.txt
+strings.txt
+wrd_strings.txt
+wrd_katman2.txt
+payload.bin
+*.trace.txt
+*.deobf.lua
+
+# ---- OS / editor ----
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
