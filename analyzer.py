@@ -63,6 +63,9 @@ DESENLER = [
     (r"luaprot", "OBF", 15, "LuaProt lisans stub'i (kod sunucuda kilitli)"),
     (r'LPH[+|]', "OBF", 10, "XSUB/Luraph turevi paketleme"),
     (r"\\x[0-9a-fA-F]{2}\\x[0-9a-fA-F]{2}\\x[0-9a-fA-F]{2}", "OBF", 6, "hex-kacisli string yigini"),
+    (r"(?:[A-Za-z0-9+/]{4}){20,}", "ANOMALI", 15, "Uzun Base64 bloğu (gizli veri?)"),
+    (r"\\(?:[0-9]{3}){10,}", "ANOMALI", 15, "Uzun kaçış dizisi (gizli kod?)"),
+    (r"loadstring\s*\(\s*game:HttpGet", "ANOMALI", 25, "Doğrudan URL'den kod yürütme!"),
 ]
 
 # -------------------- amac tespiti: GUC (idam-derece kanit) vs SOZ --------------------
@@ -390,9 +393,14 @@ def karar(R: dict):
     """iki eksenli karar: hirsizlik/guvenlik (g) vs hile gucu (h) -> (baslik, renk, aciklama)"""
     g = R.get("g_skor", R.get("skor", 0))
     h = R.get("h_skor", R.get("skor", 0))
+    a = sum(1 for b in R.get("bulgular", []) if b[1] == "ANOMALI")
+    
     if g >= 80:
         return ("🔴 TEHLİKELİ — hesap/veri riski yüksek!", 0xE74C3C,
                 "Hirsizlik/sizinti desenleri agir. Calistirma, alternatife bak!")
+    if a >= 2:
+        return ("🚨 ANOMALİ SAPTANDI — şüpheli yapı!", 0xE67E22,
+                "Kodda tanınmayan ve şüpheli derecede karmaşık yapılar var. Zincirleme analizle alt-linkleri kontrol edin!")
     if g >= 40:
         return ("🟠 RİSKLİ — sızıntı sinyali var", 0xE67E22,
                 "Dis iletisim/hesap sinifli desenler mevcut. Goz kirpmadan incele.")

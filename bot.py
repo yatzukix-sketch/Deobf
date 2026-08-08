@@ -14,9 +14,20 @@ TOKEN KESINLIKLE .env / environment'tan gelir, koda GOMMEK YASAK.
   .istatistik      -> oturum sayaclari
   .y               -> bu menu
 """
-import os, io, re, time, random, difflib, traceback, subprocess, tempfile, shutil
+import os, io, re, time, random, difflib, traceback, subprocess, tempfile, shutil, logging
 import discord
 from discord.ext import commands
+
+# Logging yapılandırması
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler("bot.log"),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger("Deobf.Bot")
 
 import deobf, analyzer, chatmod
 
@@ -91,7 +102,7 @@ def _rcs(lst):
 
 @bot.event
 async def on_ready():
-    print(f"[+] Deobf Bot online: {bot.user}")
+    logger.info(f"Deobf Bot online: {bot.user}")
 
 
 # -------------------- HELP (embed UI) --------------------
@@ -301,7 +312,7 @@ async def aly_cmd(ctx, url: str = None):
         zincir = []
         incelenen = set()
         bekleyen = analyzer.bul_zincir_linkleri(text + "\n" + ek_havuz)
-        while bekleyen and len(zincir) < 4:
+        while bekleyen and len(zincir) < 8: # Zincir derinliğini 8'e çıkardım
             u = bekleyen.pop(0)
             if u in incelenen:
                 continue
@@ -313,6 +324,7 @@ async def aly_cmd(ctx, url: str = None):
                     raise ValueError("5MB ustu")
                 alt = data.decode("utf-8", "replace")[:1_000_000]
                 ek_alt = ""
+                # Alt linkte obf varsa çözmeye çalış
                 if "wearedevs.net/obfuscator" in alt or "luaprot" in alt.lower() or "LPH" in alt[:2000]:
                     try:
                         _, o2 = await bot.loop.run_in_executor(
@@ -321,14 +333,22 @@ async def aly_cmd(ctx, url: str = None):
                                            for a in ("wrd_strings.txt", "strings.txt", "deobf.txt") if a in o2)
                     except Exception:
                         ek_alt = ""
+                
+                # Alt scripti analiz et
                 Rz = analyzer.analyze(u.split("/")[-1][:50] or "alt-script", alt, ek_alt)
                 lbl_z, _, _ = analyzer.karar(Rz)
+                
+                # Zincir listesine ekle
                 zincir.append({"url": u, "karar": lbl_z.split("—")[0].strip(),
                                "g": Rz.get("g_skor", 0), "h": Rz.get("h_skor", 0)})
+                
+                # Ana analiz havuzuna ekle (böylece ana analiz alt scriptleri de görür)
                 ek_havuz += f"\n-- @@ZINCIR {u}\n" + alt[:120000]
                 if ek_alt:
                     ek_havuz += "\n" + ek_alt[:60000]
-                for u2 in analyzer.bul_zincir_linkleri(alt):
+                
+                # Alt scriptin içindeki linkleri de sıraya ekle (Recursive)
+                for u2 in analyzer.bul_zincir_linkleri(alt + "\n" + ek_alt):
                     if u2 not in incelenen:
                         bekleyen.append(u2)
             except Exception as ex3:
