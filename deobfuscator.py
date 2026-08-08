@@ -1,31 +1,47 @@
-import re, sys, subprocess, time, os, glob, math, tempfile, shutil, logging
+# -*- coding: utf-8 -*-
+"""deobfuscator.py — Çalışma-zamanlı (runtime) deobf motoru.
+
+GÜVENLİK (v2): Güvenilmeyen Lua artık doğrudan subprocess.run ile değil,
+`security.run_lua_sandboxed` üzerinden dar kaynak limitleriyle (bellek/CPU/
+dosya) yürütülür. Üstelik varsayılan olarak TAMAMEN KAPALIDIR; açmak için
+ortam değişkeni DEOBF_RUNTIME=1 gerekir. Bu, RCE ve bellek-DoS risklerini
+sınırlar.
+"""
+import re
+import os
+import logging
 
 logger = logging.getLogger("Deobf.Runtime")
 
-def get_lua_executable():
-    if os.name == "nt": return os.path.join("lua_bin", "lua5.1.exe")
-    env_path = os.environ.get("LUA51_EXECUTABLE")
-    if env_path: return env_path
-    for candidate in ("lua5.1", "lua51", "lua"):
-        path = shutil.which(candidate)
-        if path: return path
-    return "lua5.1"
 
-def deobfuscate_runtime(content: str) -> str:
-    """Scripti emüle ederek içindeki çözülmüş stringleri yakalar."""
-    # Güvenli Mock Ortamı
-    mock_env = r"""
--- GÜVENLİK: Tehlikeli fonksiyonları tamamen kapat
-os, io, package, debug = nil, nil, nil, nil
-dofile, loadfile = nil, nil
+def get_lua_executable() -> str:
+    """Kullanılacak lua yorumlayıcı yolu."""
+    if os.name == "nt":
+        return os.path.join("lua_bin", "lua5.1.exe")
+    env_path = os.environ.get("LUA51_EXECUTABLE")
+    if env_path and os.path.exists(env_path):
+        return env_path
+    import shutil
+    for cand in ("lua5.1", "lua51", "lua"):
+        p = shutil.which(cand)
+        if p:
+            return p
+    # repo kökündeki bundle lua51
+    here = os.path.dirname(os.path.abspath(__file__))
+    bundled = os.path.join(here, "lua51")
+    return bundled if os.path.exists(bundled) else "lua5.1"
+
+
+# Güvenli mock ortam — tehlikeli kütüphaneleri kapat (savunma derinliği)
+_MOCK_ENV = r"""
+-- GÜVENLİK: tehlikeli kütüphaneleri kapat
+os, io, package, debug, loadfile, dofile = nil, nil, nil, nil, nil, nil
 
 local _STRINGS = {}
 local real_print = print
-local real_type = type
 
--- Akıllı Yakalayıcı: loadstring ve benzeri çağrıları izle
 local function capture(val)
-    if real_type(val) == "string" and #val > 10 then
+    if type(val) == "string" and #val > 10 then
         table.insert(_STRINGS, val)
         real_print("--- CAPTURED_START ---")
         real_print(val)
@@ -33,16 +49,18 @@ local function capture(val)
     end
 end
 
+-- loadstring'i ele geçir: argümanı yakala, no-op döndür
 _G.loadstring = function(s) capture(s) return function() end end
-_G.print = function(...) for _,v in ipairs({...}) do capture(tostring(v)) end end
+_G.load = function(s) capture(s) return function() end end
+_G.print = function(...) for _, v in ipairs({...}) do capture(tostring(v)) end end
 
--- Roblox API Mock
+-- Roblox API mock (çağrıları patlatmadan akışa devam)
 local function create_mock(name)
     local m = {}
     setmetatable(m, {
         __index = function(_, k) return create_mock(name .. "." .. k) end,
         __call = function(_, ...) return create_mock(name .. "_res") end,
-        __tostring = function() return name end
+        __tostring = function() return name end,
     })
     return m
 end
@@ -52,40 +70,50 @@ workspace = create_mock("workspace")
 script = create_mock("script")
 shared = {}
 getgenv = function() return _G end
-
--- Hedef Script Buraya Gelecek
 """
-    
-    # Scripti mock ortamıyla birleştir
-    full_code = mock_env + "\n-- TARGET SCRIPT --\n" + content
-    
-    with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", suffix=".lua", delete=False) as f:
-        f.write(full_code)
-        temp_path = f.name
 
+
+def deobfuscate_runtime(content: str) -> str:
+    """Scripti emüle ederek içindeki çözülmüş stringleri yakalar.
+
+    DEOBF_RUNTIME=1 değilse hemen boş döner (güvenli mod). Açıksa kod,
+    security.run_lua_sandboxed ile bellek/CPU limitli sandbox'ta yürütülür.
+    """
     try:
-        # Kısıtlı sürede çalıştır (sonsuz döngü koruması)
-        proc = subprocess.run([get_lua_executable(), temp_path], 
-                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, 
-                            timeout=10, text=True, errors="replace")
-        
-        # Yakalanan stringleri ayıkla
-        captured = re.findall(r"--- CAPTURED_START ---\n(.*?)\n--- CAPTURED_END ---", proc.stdout, re.S)
-        if captured:
-            return "\n\n-- [DİNAMİK ÇÖZÜLEN KATMANLAR] --\n\n" + "\n\n".join(captured)
-    except Exception as e:
-        logger.error(f"Runtime deobf hatası: {e}")
-    finally:
-        if os.path.exists(temp_path): os.remove(temp_path)
-    
+        import security
+    except Exception as e:  # noqa: BLE001
+        logger.error(f"security modülü yok, runtime kapatıldı: {e}")
+        return ""
+
+    if not security.runtime_on():
+        logger.info("runtime deobf atlandı (DEOBF_RUNTIME != 1)")
+        return ""
+
+    if not content or len(content) > 2 * 1024 * 1024:
+        logger.warning("runtime: içerik boş/çok büyük, atlandı")
+        return ""
+
+    full_code = _MOCK_ENV + "\n-- TARGET SCRIPT --\n" + content
+    try:
+        stdout, stderr, rc = security.run_lua_sandboxed(
+            get_lua_executable(), full_code, timeout=10, mem_mb=256, cpu_sec=8
+        )
+    except PermissionError:
+        return ""
+    except FileNotFoundError as e:
+        logger.error(f"lua yorumlayıcı yok: {e}")
+        return ""
+
+    captured = re.findall(r"--- CAPTURED_START ---\n(.*?)\n--- CAPTURED_END ---",
+                          stdout, re.S)
+    if captured:
+        return "\n\n-- [DİNAMİK ÇÖZÜLEN KATMANLAR] --\n\n" + "\n\n".join(captured)
+    if rc != 0:
+        logger.warning(f"runtime lua rc={rc}: {stderr[:120]}")
     return ""
 
+
 def process_full(content: str) -> str:
-    """Statik ve dinamik analizi birleştirir."""
-    # 1. Statik Temizlik (Basit)
-    content = re.sub(r"--\[\[.*?\]\]", "", content, flags=re.S) # Blok yorumlar
-    
-    # 2. Dinamik Emülasyon
-    runtime_result = deobfuscate_runtime(content)
-    
-    return content + runtime_result
+    """Statik + dinamik analizi birleştirir (dinamik gated)."""
+    content = re.sub(r"--\[\[.*?\]\]", "", content, flags=re.S)  # blok yorumlar
+    return content + deobfuscate_runtime(content)

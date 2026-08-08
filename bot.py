@@ -30,6 +30,9 @@ logging.basicConfig(
 logger = logging.getLogger("Deobf.Bot")
 
 import deobf, analyzer, chatmod
+import security, stealer_detect
+
+OWNER_ID = security.get_owner_id()
 
 
 def _load_dotenv(path=".env"):
@@ -59,6 +62,41 @@ MAX_DISCORD_MSG = 1800
 START_TS = time.monotonic()
 STATS = {"l": 0, "get": 0, "aly": 0, "diff": 0, "sor": 0, "rt": 0}
 URL_RX = re.compile(r'https?://[^\s"\'<>()]+')
+
+
+# -------------------- KONTROL 3: yetki & hız sınırı --------------------
+def privileged():
+    """Sadece bot sahibi veya 'Sunucuyu Yönet' yetkilisi çalıştırabilir."""
+    async def predicate(ctx):
+        if security.owner_or_manage_guild(ctx):
+            return True
+        raise commands.CheckFailure(
+            "⛔ Bu komut sadece bot sahibine / sunucu yöneticisine açık.")
+    return commands.check(predicate)
+
+
+async def _fetch_budgele(ctx, key=None) -> bool:
+    """Kanal başına istek bütçesi — aşarsa uyarır ve engeller."""
+    key = key or f"ch:{ctx.channel.id}"
+    ok, kalan = security.fetch_budget_ok(key, limit=8, window=60)
+    if not ok:
+        await ctx.send("🐢 Çok hızlı! Bu kanalda 60 sn'de en fazla 8 istek. "
+                       "Biraz soluklan tekrar dene.")
+        return False
+    return True
+
+
+@bot.event
+async def on_command_error(ctx, error):
+    if isinstance(error, commands.CommandOnCooldown):
+        await ctx.send(f"🐢 Bu komut beklemede: {error.retry_after:.0f} sn sonra "
+                       f"tekrar dene (hız sınırı).", delete_after=10)
+    elif isinstance(error, commands.CheckFailure):
+        await ctx.send(str(error), delete_after=10)
+    elif isinstance(error, commands.CommandNotFound):
+        return
+    else:
+        logger.error(f"komut hatası: {error}")
 
 # .aly sonrasi sohbet altyapisi
 SONS = {}     # channel_id -> {"R":..., "name":..., "kaynak":..., "ek":..., "ts":...}
@@ -145,9 +183,12 @@ async def help_cmd(ctx):
 
 # -------------------- .get (ayni, ufak makyaj) --------------------
 @bot.command(name="get")
+@commands.cooldown(4, 30, commands.BucketType.channel)
 async def smart_get(ctx, url: str = None):
     if not url:
         return await ctx.send("Kullanim: `.get <url>` — script sayfasini/api linkini ver, icerigini cikarayim.")
+    if not await _fetch_budgele(ctx):
+        return
     m = URL_RX.search(url)
     if m: url = m.group(0)
     try:
@@ -179,6 +220,7 @@ async def smart_get(ctx, url: str = None):
 
 # -------------------- .l (pipeline) --------------------
 @bot.command(name="l")
+@commands.cooldown(2, 30, commands.BucketType.channel)
 async def load_and_deobf(ctx, url: str = None):
     try:
         name, content = None, None
@@ -189,6 +231,8 @@ async def load_and_deobf(ctx, url: str = None):
             content = await att.read()
             name = att.filename
         elif url:
+            if not await _fetch_budgele(ctx):
+                return
             m = URL_RX.search(url)
             if m: url = m.group(0)
             url = deobf.normalize_raw_url(url)
@@ -209,8 +253,16 @@ async def load_and_deobf(ctx, url: str = None):
 
 
 # -------------------- .aly  (SENSEI-AI v2.3 + zincir) --------------------
-def _aly_embed(name, text, R: dict, ek: str, zincir=None):
+def _aly_embed(name, text, R: dict, ek: str, zincir=None, stealer=None):
     karar_lbl, renk, karar_acik = analyzer.karar(R)
+    # ---- STEALER ALARMI varsa kartı kırmızıya boya ----
+    s_alarm = ""
+    if stealer and stealer.get("is_stealer"):
+        renk = 0xE74C3C
+        karar_lbl = f"🚨 STEALER TESPİTİ! ({stealer.get('guven', 0)}% güven)"
+        karar_acik = "⛔ ÇALIŞTIRMA! " + stealer.get("ozet", "")
+        s_alarm = ("\n\n🚨🚨🚨 **STEALER ALARMI** — bu script hesap/şifre/çerez/cüzdan "
+                   "çalıyor olabilir! Detaylar aşağıda '🦠 STEALER incelemesi' rafında.")
     if zincir and any(z["g"] >= 40 for z in zincir):
         karar_acik = karar_acik + " ⚠️ **ZINCIRDE supheli alt-link saptandi!** Bak: zincir rafı."
         renk = min(renk, 0xE67E22) if renk == 0x2ECC71 else renk
@@ -218,7 +270,7 @@ def _aly_embed(name, text, R: dict, ek: str, zincir=None):
     e = discord.Embed(title=f"🕵️ SENSEI-AI Analiz — {name[:60]}",
                       description=(f"### {karar_lbl}\n_{karar_acik}_\n"
                                    f"🛡️ hesap-guvenlik riski {analyzer.gauge(g)} **%{g}**\n"
-                                   f"🎮 hile gucu {analyzer.gauge(h)} **%{h}**"),
+                                   f"🎮 hile gucu {analyzer.gauge(h)} **%{h}**{s_alarm}"),
                       color=renk)
     # KANITLI tespitler: ustune yemin ederiz :)
     if R["amac_kesin"]:
@@ -254,6 +306,25 @@ def _aly_embed(name, text, R: dict, ek: str, zincir=None):
         e.add_field(name="📡 remote izleri (+ amac tahmini)", value="\n".join(sat)[:1024], inline=False)
     if R["urller"]:
         e.add_field(name="🌐 dis iletisim", value="\n".join(R["urller"][:6])[:1024], inline=False)
+    # ---- STEALER inceleme rafı (her zaman gösterilir; tespit yoksa 'temiz') ----
+    if stealer:
+        if stealer.get("is_stealer"):
+            satir = [stealer.get("ozet", "")]
+            for _kat, p, acik, _kt in stealer.get("bulgular", [])[:6]:
+                satir.append(f"**+{p}** {acik}")
+            e.add_field(name="🦠 STEALER incelemesi — 🚨 TESPİT EDİLDİ",
+                        value="\n".join(satir)[:1024], inline=False)
+        elif stealer.get("bulgular"):
+            satir = [f"🔎 {b[2]} (+{b[1]})" for b in stealer["bulgular"][:4]]
+            satir.append(f"_Stealer sinyali zayıf (güven %{stealer.get('guven', 0)}). "
+                         f"Ama kanıt ≠ garanti, obf varsa dikkat._")
+            e.add_field(name="🦠 STEALER incelemesi — şüphe var ama net değil",
+                        value="\n".join(satir)[:1024], inline=False)
+        else:
+            e.add_field(name="🦠 STEALER incelemesi — ✅ temiz",
+                        value=("Çerez/token/cüzdan hırsızlığı veya sızdırma deseni "
+                               "bulunamadı. (Kanıt yokluğu = garanti değil.)"),
+                        inline=False)
     if zincir:
         sat = []
         for z in zincir[:6]:
@@ -272,6 +343,7 @@ def _aly_embed(name, text, R: dict, ek: str, zincir=None):
 
 
 @bot.command(name="aly", aliases=["analiz"])
+@commands.cooldown(3, 60, commands.BucketType.channel)
 async def aly_cmd(ctx, url: str = None):
     try:
         name, content = None, None
@@ -284,6 +356,8 @@ async def aly_cmd(ctx, url: str = None):
             m = URL_RX.search(url)
             if m: url = m.group(0)
             if url.startswith("http"):
+                if not await _fetch_budgele(ctx):
+                    return
                 url = deobf.normalize_raw_url(url)
                 async with ctx.typing():
                     raw = await bot.loop.run_in_executor(None, deobf.fetch, url)
@@ -358,10 +432,16 @@ async def aly_cmd(ctx, url: str = None):
             ek_not = (ek_not + "\n" if ek_not else "") + \
                      f"🔗 zincir: {ok_no}/{len(zincir)} alt-link ayrica tarandi"
         R = analyzer.analyze(name, text, ek_havuz)
-        await ctx.send(embed=_aly_embed(name, text, R, ek_not, zincir))
+        # ---- STEALER incelemesi: scripti araştır, hırsız mı belirle ----
+        S = stealer_detect.investigate(text, ek_havuz)
+        # stealer tespit edilirse önce yüksek sesle ALARM, sonra detaylı kart
+        if S.get("is_stealer"):
+            await ctx.send("🚨 **@here** " + stealer_detect.alarm_metni(S)[:MAX_DISCORD_MSG])
+        await ctx.send(embed=_aly_embed(name, text, R, ek_not, zincir, stealer=S))
         # sohbet icin hafizaya al (kanal basina son analiz)
         SONS[ctx.channel.id] = {"R": R, "name": name, "ts": time.time(), "zincir": zincir,
-                                "kaynak": text[:80000], "ek": ek_havuz[:60000]}
+                                "kaynak": text[:80000], "ek": ek_havuz[:60000],
+                                "stealer": S}
         STATS["aly"] += 1
     except Exception as ex:
         print(traceback.format_exc(limit=3))
@@ -394,7 +474,14 @@ def _prom_hazir() -> bool:
 
 
 def _rt_kos(name: str, content: bytes) -> dict:
-    """Senkron calisan runtime-deobf (Prometheus mock-trace). bot executor'da cagrilir."""
+    """Senkron calisan runtime-deobf (Prometheus mock-trace). bot executor'da cagrilir.
+
+    GÜVENLİK: DEOBF_RUNTIME=1 değilse hiç yürütmez. Açıksa alt süreç
+    security.run_limited ile CPU/duvar-zamanı limitli çalışır.
+    """
+    if not security.runtime_on():
+        return {"boom": False, "sure": 0.0, "rc": -1,
+                "hata": "runtime deobf kapalı (DEOBF_RUNTIME=1 + OWNER_ID gerek)", "trace": ""}
     d = tempfile.mkdtemp(prefix="rt_")
     try:
         prom = _prom_bul()
@@ -406,9 +493,14 @@ def _rt_kos(name: str, content: bytes) -> dict:
         env = dict(os.environ)
         env["LUA51_EXECUTABLE"] = os.path.join(prom, "lua51")
         t0 = time.time()
-        r = subprocess.run(["python3" if os.name != "nt" else "python",
-                            os.path.join(prom, "deobfuscator.py"), hedef],
-                           env=env, capture_output=True, text=True, timeout=120)
+        try:
+            r = security.run_limited(["python3" if os.name != "nt" else "python",
+                                      os.path.join(prom, "deobfuscator.py"), hedef],
+                                     timeout=120, mem_mb=1024, cpu_sec=90,
+                                     env=env, limit_mem=False)
+        except Exception as e:
+            return {"boom": False, "sure": time.time() - t0, "rc": -1,
+                    "hata": f"süreç hatası: {type(e).__name__}: {e}", "trace": ""}
         sure = time.time() - t0
         out = {"sure": sure, "rc": r.returncode,
                "hata": (r.stderr or "").strip()[-260:], "trace": r.stdout or ""}
@@ -434,7 +526,12 @@ def _rt_kos(name: str, content: bytes) -> dict:
 
 
 @bot.command(name="rt", aliases=["runtime", "prom"])
+@privileged()
+@commands.cooldown(1, 120, commands.BucketType.channel)
 async def rt_cmd(ctx, url: str = None):
+    if not security.runtime_on():
+        return await ctx.send("🔒 `.rt` runtime deobf güvenlik nedeniyle kapalı. Açmak için "
+                              "sunucuda `DEOBF_RUNTIME=1` ve `OWNER_ID=<senin id>` ayarla.")
     if not _prom_hazir():
         return await ctx.send("⚠️ `prom/` vendor klasoru eksik yahut lua51 yok — GitHub repo kokune `prom/` klasorunu de yukle (deobfuscator.py, trace_to_lua.py, lua51).")
     try:
@@ -485,9 +582,12 @@ async def rt_cmd(ctx, url: str = None):
 
 # -------------------- .diff (Sensei fikri!) --------------------
 @bot.command(name="diff", aliases=["karsilastir"])
+@commands.cooldown(2, 60, commands.BucketType.channel)
 async def diff_cmd(ctx, urlA: str = None, urlB: str = None):
     if not (urlA and urlB):
         return await ctx.send("Kullanim: `.diff <link1> <link2>` — iki surumu karsilastiririm.")
+    if not await _fetch_budgele(ctx, key=f"diff:{ctx.channel.id}"):
+        return
     try:
         async with ctx.typing():
             dA, _ = await bot.loop.run_in_executor(None, deobf.smart_fetch, urlA)

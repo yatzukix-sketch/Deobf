@@ -285,7 +285,6 @@ def analyze(name: str, text: str, ek_havuz: str = "") -> dict:
     toplam = 0
     kat_toplam: dict = {}
     for rx, kat, puan, acik in DESENLER:
-        lines = re.findall_rx = None
         hits = [L for _, L in havuz_lines if re.search(rx, L, re.I if kat != "OBF" else 0)]
         if not hits:
             continue
