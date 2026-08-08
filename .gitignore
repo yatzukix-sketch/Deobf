@@ -12,6 +12,7 @@ __pycache__/
 .venv/
 venv/
 env/
+$py.class
 .mypy_cache/
 .pytest_cache/
 .ruff_cache/

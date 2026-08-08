@@ -293,10 +293,8 @@ def parse_trace(report_file):
         lua_lines.append("end")
         lua_lines.append("")
 
-        loop_end_idx = pattern_len * repeat_count
-        remaining_ops = [op for i, op in enumerate(operations)
-                        if not (op["type"] == "call" and op["depth"] == 0 and
-                               operations.index(op) < loop_end_idx * (len(operations) / len(top_level_calls) if top_level_calls else 1))]
+        # (Eski sürümde hesaplanıp hiç kullanılmayan 'remaining_ops' kaldırıldı;
+        # operations.index(op) duplicate'lerde yanlış dizin döndürüyordu — ölü kod.)
     else:
         closure_info_stack = []
         i = 0
