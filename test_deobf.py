@@ -9,9 +9,9 @@ ok = True
 
 # 1) hex/base64 sanity
 t = r'local a="\x48\x65\x6c\x6c\x6f\x20\x57\x6f\x72\x6c\x64\x20\x54\x65\x73\x74" local b="' + "aGVsbG8gd29ybGQgdGhpcyBpcyBhIGJhc2U2NCB0ZXN0IGJsb2Nr" + '"'
-u, nh = deobf.unhex(t)
-assert "Hello World Test" in u and nh == 16, f"unhex fail: nh={nh}"
-print("PASS unhex")
+u, nh = deobf.recursive_deobf(t)
+assert "Hello World Test" in u and nh == 16, f"recursive_deobf fail: nh={nh}"
+print("PASS recursive_deobf (hex)")
 
 # 2) drone XSUB yasasi (gercek blob — HAFIZA: drone_blob.txt 311,574 char, decoded 249,256 byte, drone_decoded.bin ile byte-identical)
 blob_path = "/home/user/dumper/drone_blob.txt"

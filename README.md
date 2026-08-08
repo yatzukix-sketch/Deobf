@@ -17,9 +17,21 @@ python bot.py
 Konsolda `[+] Deobf Bot online: ...` görünce hazır.
 
 ## 🎮 2. Kullanım (Discord'da)
-- `.l https://paste.c-net.org/XYZ` → linki fetchler, deobf eder, `deobf.txt` + `strings.txt` atar
-- txt dosyasını mesaja ekle + mesaja sadece `.l` yaz → ek dosyayı işler
-- `.y` → yardım
+Önek `.` veya `!` (ikisi de çalışır).
+
+| Komut | Açıklama |
+|---|---|
+| `.l <url/dosya>` | Linki fetchle, deobf et → `deobf.txt` + `strings.txt` |
+| `.aly <url/dosya>` | SENSEI-AI v2.3 kanıt-disiplinli güvenlik/davranış analizi + zincir link takibi (`.analiz`) |
+| `.sor <soru>` | Son `.aly` analizi hakkında soru-cevap (`.s`, `.soru`) |
+| `.sohbet` | Kısa süreli konuşma modu; kapatmak için `cik` yaz (`.chat`, `.c`, `.konus`) |
+| `.rt <url/dosya>` | RUNTIME deobf — Prometheus mock-trace motoru (`.runtime`, `.prom`) |
+| `.diff <a> <b>` | İki scripti karşılaştır (`.karsilastir`) |
+| `.get <url>` | Akıllı URL çekici (raw dönüşümlerle) |
+| `.istatistik` | Oturum sayaçları (`.stat`, `.stats`) |
+| `.y` | Yardım menüsü (`.yardim`, `.h`) |
+
+Not: `.l` tek başına + ekli txt dosyası → ekteki dosyayı işler.
 
 ## 🏠 3. 7/24 HOSTING SEÇENEKLERİ (ücretsiz)
 | Host | Not |

@@ -1,29 +1,33 @@
-# Python
-__pycache__/
-*.py[cod]
-*$py.class
-*.so
-
-# Sanal ortamlar
-.venv/
-venv/
-env/
-
-# Ortam / gizli
+# ---- Gizli bilgiler (ASLA commit etme) ----
 .env
 .env.*
 *.token
+secrets.*
+!*.env.example
 
-# Bot çalışma çıktıları
-bot.log
-*.log
-prom/
-lua_bin/
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+$py.class
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
 
-# İşletim sistemi
+# ---- Deobf bot çıktıları (runtime üretilen) ----
+deobf.txt
+strings.txt
+wrd_strings.txt
+wrd_katman2.txt
+payload.bin
+*.trace.txt
+*.deobf.lua
+
+# ---- OS / editor ----
 .DS_Store
 Thumbs.db
-
-# IDE
-.vscode/
 .idea/
+.vscode/
