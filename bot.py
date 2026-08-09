@@ -529,9 +529,11 @@ def _rt_kos(name: str, content: bytes) -> dict:
 @privileged()
 @commands.cooldown(1, 120, commands.BucketType.channel)
 async def rt_cmd(ctx, url: str = None):
-    if not security.runtime_on():
+    if security.get_owner_id() is None:
         return await ctx.send("🔒 `.rt` runtime deobf güvenlik nedeniyle kapalı. Açmak için "
-                              "sunucuda `DEOBF_RUNTIME=1` ve `OWNER_ID=<senin id>` ayarla.")
+                              "sunucuda `OWNER_ID=<senin id>` ve `DEOBF_RUNTIME=1` ayarla.")
+    if not security.runtime_on():
+        return await ctx.send("🔒 `.rt` runtime deobf güvenlik nedeniyle kapalı. `DEOBF_RUNTIME=1` etkin, ama OWNER_ID olmadan çalışmaz.")
     if not _prom_hazir():
         return await ctx.send("⚠️ `prom/` vendor klasoru eksik yahut lua51 yok — GitHub repo kokune `prom/` klasorunu de yukle (deobfuscator.py, trace_to_lua.py, lua51).")
     try:

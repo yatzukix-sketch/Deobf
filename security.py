@@ -136,8 +136,16 @@ RUNTIME_ENABLED = os.environ.get("DEOBF_RUNTIME") == "1"
 
 
 def runtime_on() -> bool:
-    """Lua/çalışma-zamanlı yürütme açık mı? (varsayılan KAPALI = güvenli)."""
-    return RUNTIME_ENABLED
+    """Lua/çalışma-zamanlı yürütme aktif mi? DEOBF_RUNTIME=1 ve OWNER_ID ile güvenli hale getir.
+
+    Runtime aktivasyonu tek başına ortam değişkeni değil; sahip kimliği de tanımlı olmalıdır.
+    """
+    if not RUNTIME_ENABLED:
+        return False
+    if get_owner_id() is None:
+        logger.warning("DEOBF_RUNTIME=1 fakat OWNER_ID ayarlanmamis; runtime devre disi.")
+        return False
+    return True
 
 
 def run_limited(cmd: list[str], input_text: str | None = None,
