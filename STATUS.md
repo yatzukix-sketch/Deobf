@@ -1,5 +1,5 @@
 # STATUS.md — Live Infrastructure (auto-updated)
-_Last updated: 2026-08-10T09:57:19.622Z_
+_Last updated: 2026-08-10T22:00:26.476Z_
 
 ## Container
 - **Name**: vk-deobf
@@ -14,11 +14,11 @@ _Last updated: 2026-08-10T09:57:19.622Z_
 - **Subdomain**: deobf.vibekit.bot
 - **DB Status**: stopped
 - **Health Failures**: 0
-- **Last Healthy**: 2026-08-10T06:45:49.505+00:00
+- **Last Healthy**: 2026-08-10T10:00:57.112+00:00
 
 
 ## Host
-- **Disk**: 24G used / 30G total (77% full)
+- **Disk**: 24G used / 30G total (78% full)
 
 ## Recent Logs (last 10 lines)
 ```

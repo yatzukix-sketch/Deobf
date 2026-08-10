@@ -75,6 +75,82 @@ when the image must contain readable TEXT — wordmarks/banners; default model i
 faster + cheaper and best for everything else). 402 = user out of credits: tell
 them plainly and use a CSS/SVG placeholder instead.
 
+## Diagrams — draw to explain, not to decorate
+
+When words alone would be clumsy — a layout, a flow, a comparison, how parts
+fit together, a measurement someone has to take — draw it. Write an SVG file in
+the workspace, then `show-visual` it. It renders as a real diagram in chat,
+crisp at any size, and it stays a drawing rather than a screenshot of one.
+
+Draw when a picture carries the answer. Do NOT draw to decorate a reply that is
+already clear, and never draw instead of answering.
+
+```bash
+cat > diagram.svg <<'SVG'
+<svg xmlns="http://www.w3.org/2000/svg" width="100%" viewBox="0 0 680 400" role="img">
+  <title>Checkout flow</title>
+  <desc>Cart, then payment, then confirmation, with the retry path</desc>
+  <rect x="20" y="40" width="180" height="80" fill="none" stroke="#8b8b95"/>
+  <text x="40" y="85" font-size="14" fill="#f0f0f3">Cart</text>
+</svg>
+SVG
+curl -s -X POST "$VIBEKIT_API_URL/api/v1/hosting/app/$VIBEKIT_APP_ID/agent/show-visual" \
+  -H "Authorization: Bearer $VIBEKIT_API_KEY" -H 'Content-Type: application/json' \
+  -d '{"path":"diagram.svg","caption":"how checkout flows, including the retry"}'
+# → { "ok": true, "path": "diagram.svg", "raster": ".vibekit/visuals/….png", "bytes": 19321 }
+```
+
+**The rules, all enforced — a 422 lists exactly what to fix, so fix them and
+call again:**
+
+- ONE root `<svg>`, nothing before it, `width="100%"`, `viewBox` starting `0 0 680`
+- viewBox height 2400 or less — split a long diagram into two rather than one tall one
+- `role="img"`, with `<title>` then `<desc>` as the first two children
+- Allowed elements only: `g path rect circle ellipse line polyline polygon text
+  tspan defs marker clipPath linearGradient stop title desc`
+- NO `<script>`, `<foreignObject>`, `<image>`, `<use>`, `<style>`, animation
+- NO `on*` attributes, no external URLs, no `url(http…)` — internal `#id` only
+- `font-size` 11px or larger, or it is unreadable on a phone
+- Under 96KB of markup
+
+**Prefer a plain box-and-arrow graph.** Boxes, arrows between them, a short
+label inside each box. Reach for dimension arrows, leader lines or stacked
+annotation ONLY when the question is genuinely about measurement ("how big is
+this couch"). Measured across real diagrams: the ones that came out clean were
+box-and-arrow; every one that came out untidy had leader lines or dimension
+annotation, because that is where text and geometry compete for the same space.
+Fewer elements beats better arithmetic.
+
+**Making it READABLE — these decide whether it looks good, and nothing checks
+them for you:**
+
+- **Paint order: every shape first, every `<text>` last.** SVG paints in document
+  order, so a rect emitted after a label covers that label no matter how much
+  room you left for it. Emit all rects/paths/lines/arrows, then all text.
+- **Put free-floating labels in a column at a fixed `x` with
+  `text-anchor="start"`, and draw nothing to the right of that column.** A long
+  label then overflows into empty space instead of into a shape. Never centre a
+  free-floating label: centring is the one operation that needs the rendered
+  width, and you cannot know it.
+- **Keep every label to 24 characters or fewer.** Split onto a second `<tspan>`
+  rather than running long. This turns "guess the width" into "count".
+- **Text INSIDE a box may be centred, but size the box from the text**: at least
+  `0.6 x font-size x characters` wide, plus 16px padding each side. Too wide
+  costs nothing; too narrow clips.
+- **Leave 24px of clear space below any box that has a caption under it**, and
+  never route a connector through the label column or across another label.
+- **Every dimension arrow gets exactly one label, on the axis it measures.**
+
+**Before you emit, reread every label once.** No placeholders ("TBD", "Depth
+again"), no duplicates, nothing left over from an earlier draft, no arrow
+without a label. A diagram is finished work, not a sketch.
+
+`caption` is not decoration: it is what the user sees if the drawing cannot be
+rendered on their device, so put the meaning in it ("how checkout flows"), not a
+label ("diagram"). Colours: the chat is dark, so light strokes and text on a
+dark background read best (`#f0f0f3` text, `#8b8b95` lines, `#a78bfa` to
+highlight).
+
 ## Account — the owner's plan, credits, sessions, add-ons
 The user's OWN account state. PLATFORM.md lists what plans EXIST; this is what
 THEY are on. Fetch it whenever they ask about their plan, subscription,
