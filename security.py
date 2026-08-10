@@ -135,7 +135,10 @@ def safe_fetch(url: str, timeout: int = HTTP_TIMEOUT, max_bytes: int = MAX_BYTES
     ips = _all_ips(host)
     if not ips or any(not is_safe_ip(ip) for ip in ips):
         raise ValueError("SSRF engeli: DNS sonucu değişti veya güvenli değil")
-    connect_ip = ips[0]
+    # Bazı hosting ağlarında IPv6 DNS cevabı dönse de dışarı çıkış rotası yoktur.
+    # Tüm sonuçlar güvenlikten geçtikten sonra IPv4'ü tercih et; bu DNS
+    # rebinding savunmasını zayıflatmadan erişilebilirliği düzeltir.
+    connect_ip = next((ip for ip in ips if ":" not in ip), ips[0])
     port = parsed.port or (443 if parsed.scheme == "https" else 80)
     host_header = host if parsed.port is None else "{}:{}".format(host, parsed.port)
     path = urllib.parse.urlunsplit(("", "", parsed.path or "/", parsed.query, ""))
