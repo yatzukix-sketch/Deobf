@@ -284,6 +284,14 @@ def wrd_full_deobf(text: str) -> Tuple[str, Dict]:
         text = pattern.sub(replace_table_index, text)
     info["accessors_found"] = len(accessors)
 
+    # Çözülen sabitleri çıktı tüketicilerinin (analiz/UI) kullanabilmesi için sakla.
+    # Binary olanlar da görünürlük için \xHH biçiminde temsil edilir.
+    readable = []
+    for index, value in enumerate(decoded_strings, 1):
+        rendered = "".join(ch if ch.isprintable() and ch not in "\r\n\t" else "\\x{:02x}".format(ord(ch) & 0xFF) for ch in value)
+        if rendered:
+            readable.append("[{:03d}] {}".format(index, rendered))
+    info["decoded_strings"] = readable
     final_code, changes = recursive_deobf(text)
     info["recursive_changes"] = changes
     return final_code, info
@@ -299,6 +307,12 @@ def deobf_pipeline(name: str, content: bytes):
         text, winfo = wrd_full_deobf(text)
         layer = " + ikinci katman çözüldü" if winfo.get("second_layer_decoded") else ""
         report.append(f"- WRD Tespiti: {winfo.get('strings_found', 0)} sabit çözüldü{layer}.")
+        decoded = winfo.get("decoded_strings", [])
+        if decoded:
+            outputs["wrd_strings.txt"] = ("# WRD STATİK ÇÖZÜLMÜŞ SABİTLER\n"
+                                           "# Kaynak kod yürütülmeden çıkarılmıştır.\n\n" +
+                                           "\n".join(decoded)).encode("utf-8", "replace")
+            report.append(f"- WRD Sabit Çıktısı: {len(decoded)} değer `wrd_strings.txt` içine alındı.")
 
     # Güvenilmeyen Lua yürütmesi kaldırıldı; yalnızca statik analiz yapılır.
     report.append("- Dinamik Analiz: güvenlik nedeniyle devre dışı; yalnızca statik analiz yapıldı.")
