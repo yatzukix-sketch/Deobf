@@ -292,6 +292,29 @@ def wrd_full_deobf(text: str) -> Tuple[str, Dict]:
         if rendered:
             readable.append("[{:03d}] {}".format(index, rendered))
     info["decoded_strings"] = readable
+
+    # Ham WRD tablosunu doğrudan çözülen Lua sabitleriyle değiştirerek
+    # okunabilir bir ara kaynak üret. VM kontrol akışı kasıtlı olarak korunur:
+    # bilinmeyen dinamik hesapları tahmin edip sahte kod üretmeyiz.
+    table_start = text.find("{", re.search(r"\blocal\s+" + re.escape(table_name) + r"\s*=\s*\{", text).start())
+    depth, quote, escaped, table_end = 0, None, False, None
+    for pos in range(table_start, len(text)):
+        ch = text[pos]
+        if quote:
+            if escaped: escaped = False
+            elif ch == "\\": escaped = True
+            elif ch == quote: quote = None
+        elif ch in ("'", '\"'):
+            quote = ch
+        elif ch == "{": depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                table_end = pos
+                break
+    if table_end is not None:
+        plaintext_table = "{\n  " + ",\n  ".join(_lua_quote(value) for value in decoded_strings) + "\n}"
+        info["readable_code"] = (text[:table_start] + plaintext_table + text[table_end + 1:])
     final_code, changes = recursive_deobf(text)
     info["recursive_changes"] = changes
     return final_code, info
@@ -313,6 +336,12 @@ def deobf_pipeline(name: str, content: bytes):
                                            "# Kaynak kod yürütülmeden çıkarılmıştır.\n\n" +
                                            "\n".join(decoded)).encode("utf-8", "replace")
             report.append(f"- WRD Sabit Çıktısı: {len(decoded)} değer `wrd_strings.txt` içine alındı.")
+        readable_code = winfo.get("readable_code")
+        if readable_code:
+            outputs["wrd_readable.lua"] = ("-- WRD okunabilir ara kaynak\n"
+                                           "-- String tablosu plaintext'e çevrildi; VM kontrol akışı korunur.\n\n" +
+                                           readable_code).encode("utf-8", "replace")
+            report.append("- WRD Okunabilir Çıktı: plaintext tablo `wrd_readable.lua` içine yazıldı.")
 
     # Güvenilmeyen Lua yürütmesi kaldırıldı; yalnızca statik analiz yapılır.
     report.append("- Dinamik Analiz: güvenlik nedeniyle devre dışı; yalnızca statik analiz yapıldı.")

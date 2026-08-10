@@ -50,6 +50,7 @@ rep, outs = deobf.deobf_pipeline("mini.lua", fake.encode())
 assert "deobf.txt" in outs and "strings.txt" in outs
 wrd_report, wrd_outputs = deobf.deobf_pipeline("wrd.lua", wrd.encode())
 assert "wrd_strings.txt" in wrd_outputs and b"Hello" in wrd_outputs["wrd_strings.txt"]
+assert "wrd_readable.lua" in wrd_outputs and b'local Q = {\n  "Hello"' in wrd_outputs["wrd_readable.lua"]
 print("PASS pipeline")
 print()
 print("===", "ALL OK" if ok else "SOME FAIL", "===")
