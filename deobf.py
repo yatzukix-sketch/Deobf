@@ -140,40 +140,93 @@ def recursive_deobf(text: str, max_depth: int = 5) -> Tuple[str, int]:
 
 
 # ---------- WRD çözücü ----------
+def _lua_quote(value: str) -> str:
+    """Çözülen değeri güvenli, yeniden okunabilir Lua stringine dönüştürür."""
+    return '"' + value.replace('\\', '\\\\').replace('"', '\\"').replace('\n', '\\n') + '"'
+
+
+def _lua_unescape(value: str) -> str:
+    """WRD tablolarındaki Lua decimal/hex ve basit escape dizilerini çözer."""
+    return _unescape_lua(value)
+
+
+def _find_lua_table(text: str):
+    """`local X = { ... }` tablosunu dengeli parantezlerle çıkarır; regex'e bağlı kalmaz."""
+    match = re.search(r"\blocal\s+([A-Za-z_]\w*)\s*=\s*\{", text)
+    if not match:
+        return None
+    depth, quote, escaped = 0, None, False
+    start = text.find("{", match.start())
+    for pos in range(start, len(text)):
+        ch = text[pos]
+        if quote:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == quote:
+                quote = None
+            continue
+        if ch in ("'", '"'):
+            quote = ch
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return match.group(1), text[start + 1:pos]
+    return None
+
+
+def _parse_lua_strings(table_body: str):
+    """Tablodaki tek/çift tırnaklı string sabitleri kaynak sırasıyla okur."""
+    values = []
+    pattern = re.compile(r"(['\"])((?:\\.|(?!\1).)*)\1", re.S)
+    for match in pattern.finditer(table_body):
+        values.append(_lua_unescape(match.group(2)))
+    return values
+
+
 def wrd_full_deobf(text: str) -> Tuple[str, Dict]:
-    info: dict = {"engine": "WRD-Advanced"}
+    """WRD string tablolarını ve sabit indeks çağrılarını statik olarak açar.
+
+    Kod yürütmez. Bilinmeyen dinamik indeksleri olduğu gibi bırakır; böylece
+    yanlış plaintext üretmek yerine okunabilir ve güvenli bir ara çıktı verir.
+    """
+    info = {"engine": "WRD-Static-Advanced", "replacements": 0}
     if "wearedevs.net/obfuscator" not in text:
         return text, {}
 
-    u_match = re.search(r"local U=\{(.*?)\}local function", text, re.S)
-    if not u_match:
-        return text, {"error": "U table not found"}
-
-    raw_strings = re.findall(r'"(.*?)"', u_match.group(1))
-    decoded_strings = []
-    for s in raw_strings:
-        try:
-            s = re.sub(r"\\(\d{3})", lambda m: chr(int(m.group(1))), s)
-            decoded_strings.append(s)
-        except Exception:  # noqa: BLE001
-            decoded_strings.append(s)
-
+    table = _find_lua_table(text)
+    if not table:
+        return text, {"engine": info["engine"], "error": "string table not found"}
+    table_name, table_body = table
+    decoded_strings = _parse_lua_strings(table_body)
+    info["table"] = table_name
     info["strings_found"] = len(decoded_strings)
+    if not decoded_strings:
+        return text, {"engine": info["engine"], "error": "string table empty"}
 
-    def replace_const(m):
-        try:
-            idx = int(m.group(1))
-            if 1 <= idx <= len(decoded_strings):
-                return f'"{decoded_strings[idx - 1]}"'
-        except Exception:  # noqa: BLE001
-            pass
-        return m.group(0)
+    # Doğrudan tablo erişimleri: U[12], U [ 12 ]
+    def replace_table_index(match):
+        idx = int(match.group(1))
+        if 1 <= idx <= len(decoded_strings):
+            info["replacements"] += 1
+            return _lua_quote(decoded_strings[idx - 1])
+        return match.group(0)
 
-    c_func_match = re.search(r"local (\w+)=function\(\w+\)return U\[\w+\]end", text)
-    if c_func_match:
-        c_name = c_func_match.group(1)
-        text = re.sub(rf"{c_name}\((\d+)\)", replace_const, text)
-        info["replacements"] = "Success"
+    text = re.sub(rf"\b{re.escape(table_name)}\s*\[\s*(\d+)\s*\]", replace_table_index, text)
+
+    # WRD'nin yaygın accessor biçimleri: local F=function(i)return U[i]end
+    accessor_pattern = re.compile(
+        rf"\blocal\s+([A-Za-z_]\w*)\s*=\s*function\s*\(\s*([A-Za-z_]\w*)\s*\)\s*"
+        rf"return\s+{re.escape(table_name)}\s*\[\s*\2\s*\]\s*end"
+    )
+    accessors = [m.group(1) for m in accessor_pattern.finditer(text)]
+    for accessor in accessors:
+        pattern = re.compile(rf"\b{re.escape(accessor)}\s*\(\s*(\d+)\s*\)")
+        text = pattern.sub(replace_table_index, text)
+    info["accessors_found"] = len(accessors)
 
     final_code, changes = recursive_deobf(text)
     info["recursive_changes"] = changes

