@@ -150,9 +150,10 @@ def _lua_unescape(value: str) -> str:
     return _unescape_lua(value)
 
 
-def _find_lua_table(text: str):
+def _find_named_lua_table(text: str, wanted_name: Optional[str] = None):
     """`local X = { ... }` tablosunu dengeli parantezlerle çıkarır; regex'e bağlı kalmaz."""
-    match = re.search(r"\blocal\s+([A-Za-z_]\w*)\s*=\s*\{", text)
+    name_pattern = re.escape(wanted_name) if wanted_name else r"[A-Za-z_]\w*"
+    match = re.search(r"\blocal\s+(" + name_pattern + r")\s*=\s*\{", text)
     if not match:
         return None
     depth, quote, escaped = 0, None, False
@@ -176,6 +177,57 @@ def _find_lua_table(text: str):
             if depth == 0:
                 return match.group(1), text[start + 1:pos]
     return None
+
+
+def _find_lua_table(text: str):
+    return _find_named_lua_table(text)
+
+
+def _eval_lua_integer(expr: str) -> Optional[int]:
+    """Yalnızca sabit aritmetik ifadeleri çözer; Lua kodu çalıştırmaz."""
+    expr = expr.strip()
+    if not re.fullmatch(r"[\d\s+\-*/%()]+", expr):
+        return None
+    try:
+        value = eval(expr, {"__builtins__": {}}, {})
+        return int(value) if isinstance(value, (int, float)) else None
+    except (ArithmeticError, SyntaxError, ValueError):
+        return None
+
+
+def _wrd_custom_base64_map(text: str) -> Dict[str, int]:
+    """WRD'nin karıştırılmış 64-karakter tablosunu statik olarak çıkarır."""
+    found = _find_named_lua_table(text, "S")
+    if not found:
+        return {}
+    _, body = found
+    mapping = {}
+    entry = re.compile(r"(?:([A-Za-z])|\[\s*['\"](\\\d{3})['\"]\s*\])\s*=\s*([^,;}]+)")
+    for letter, escaped_key, expression in entry.findall(body):
+        key = letter or chr(int(escaped_key[1:]))
+        value = _eval_lua_integer(expression)
+        if value is not None and 0 <= value < 64:
+            mapping[key] = value
+    return mapping if len(mapping) >= 60 else {}
+
+
+def _wrd_decode_string(value: str, alphabet: Dict[str, int]) -> str:
+    """WRD'nin tablodaki base64 benzeri ikinci katmanını açar."""
+    if not alphabet or not value or any(ch not in alphabet and ch != "=" for ch in value):
+        return value
+    output, acc, bits = bytearray(), 0, 0
+    for ch in value:
+        if ch == "=":
+            break
+        acc = (acc << 6) | alphabet[ch]
+        bits += 6
+        while bits >= 8:
+            bits -= 8
+            output.append((acc >> bits) & 0xFF)
+    try:
+        return output.decode("utf-8")
+    except UnicodeDecodeError:
+        return output.decode("latin-1")
 
 
 def _parse_lua_strings(table_body: str):
@@ -202,8 +254,12 @@ def wrd_full_deobf(text: str) -> Tuple[str, Dict]:
         return text, {"engine": info["engine"], "error": "string table not found"}
     table_name, table_body = table
     decoded_strings = _parse_lua_strings(table_body)
+    alphabet = _wrd_custom_base64_map(text)
+    if alphabet:
+        decoded_strings = [_wrd_decode_string(value, alphabet) for value in decoded_strings]
     info["table"] = table_name
     info["strings_found"] = len(decoded_strings)
+    info["second_layer_decoded"] = bool(alphabet)
     if not decoded_strings:
         return text, {"engine": info["engine"], "error": "string table empty"}
 
@@ -241,7 +297,8 @@ def deobf_pipeline(name: str, content: bytes):
 
     if "wearedevs.net/obfuscator" in text:
         text, winfo = wrd_full_deobf(text)
-        report.append(f"- WRD Tespiti: {winfo.get('strings_found', 0)} sabit çözüldü.")
+        layer = " + ikinci katman çözüldü" if winfo.get("second_layer_decoded") else ""
+        report.append(f"- WRD Tespiti: {winfo.get('strings_found', 0)} sabit çözüldü{layer}.")
 
     # Güvenilmeyen Lua yürütmesi kaldırıldı; yalnızca statik analiz yapılır.
     report.append("- Dinamik Analiz: güvenlik nedeniyle devre dışı; yalnızca statik analiz yapıldı.")
