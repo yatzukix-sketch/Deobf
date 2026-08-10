@@ -19,6 +19,7 @@ investigate(text, ek_havuz="") -> dict {
 Stdlib dışı bağımlılık yok; analyzer ile beraber çalışır.
 """
 import re
+from typing import Dict, List
 
 VERS = "1.0"
 
@@ -125,7 +126,7 @@ def _yorumsuz(text: str) -> str:
     return "\n".join(out)
 
 
-def _kanit(havuz: str, rx: str, n: int = 2, uz: int = 80) -> list[str]:
+def _kanit(havuz: str, rx: str, n: int = 2, uz: int = 80) -> List[str]:
     out, rxp = [], re.compile(rx, re.I)
     for L in havuz.splitlines():
         if L.strip() and rxp.search(L):
@@ -150,7 +151,7 @@ def investigate(text: str, ek_havuz: str = "") -> dict:
     }
 
     puan = 0
-    kat_puan: dict[str, int] = {}
+    kat_puan = {}
 
     # 1) bilinen marka (en yüksek sinyal)
     for rx, isim in STEALER_MARKALARI:

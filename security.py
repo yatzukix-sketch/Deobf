@@ -14,11 +14,13 @@ import re
 import socket
 import logging
 import ipaddress
+import http.client
 import urllib.request
 import urllib.parse
 import resource
 import subprocess
 import tempfile
+from typing import Dict, List, Optional, Tuple
 
 logger = logging.getLogger("Deobf.Security")
 
@@ -44,12 +46,12 @@ UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
 # ===========================================================================
 # KONTROL 1 — SSRF korumalı getirici
 # ===========================================================================
-def _all_ips(host: str):
+def _all_ips(host: str) -> List[str]:
     """Bir host için çözülen TÜM IP'leri döndürür (round-robin/rebinding savunması)."""
     try:
-        infos = socket.getaddrinfo(host, None)
+        infos = socket.getaddrinfo(host, None, type=socket.SOCK_STREAM)
         return list({sa[4][0] for sa in infos})
-    except Exception:
+    except OSError:
         return []
 
 
@@ -67,7 +69,7 @@ def is_safe_ip(ip: str) -> bool:
     return True
 
 
-def validate_url(url: str) -> tuple[bool, str]:
+def validate_url(url: str) -> Tuple[bool, str]:
     """URL'yi güvenlik açısından denetler -> (geçerli mi, sebep/IP)."""
     if not url or len(url) > 2048:
         return False, "URL boş veya 2048 karakterden uzun"
@@ -97,60 +99,81 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
-_OPENER = urllib.request.build_opener(_NoRedirect)
+class _PinnedHTTPConnection(http.client.HTTPConnection):
+    """DNS rebinding'i önlemek için soketi önceden denetlenmiş IP'ye bağlar."""
+
+    def __init__(self, connect_ip: str, host_header: str, port: int, timeout: int):
+        super().__init__(host_header, port, timeout=timeout)
+        self._connect_ip = connect_ip
+
+    def connect(self):
+        self.sock = socket.create_connection((self._connect_ip, self.port), self.timeout)
+
+
+class _PinnedHTTPSConnection(http.client.HTTPSConnection):
+    """TLS SNI/sertifika doğrulamasını host adıyla korurken IP'yi sabitler."""
+
+    def __init__(self, connect_ip: str, host_header: str, port: int, timeout: int):
+        super().__init__(host_header, port, timeout=timeout)
+        self._connect_ip = connect_ip
+
+    def connect(self):
+        raw_sock = socket.create_connection((self._connect_ip, self.port), self.timeout)
+        self.sock = self._context.wrap_socket(raw_sock, server_hostname=self.host)
 
 
 def safe_fetch(url: str, timeout: int = HTTP_TIMEOUT, max_bytes: int = MAX_BYTES,
-               referer: str | None = None) -> tuple[bytes, str]:
-    """SSRF korumalı, yönlendirme kapalı, boyut limitli HTTP GET.
-
-    Yükseltilen istisnalar:
-      ValueError  -> URL güvenli değil (SSRF engeli / boyut).
-      urllib.error.HTTPError/URLError -> ağ/HTTP hatası.
-    """
+               referer: Optional[str] = None) -> Tuple[bytes, str]:
+    """Tek DNS çözümüyle IP'ye sabitlenmiş, yönlendirmesiz ve boyut sınırlı GET."""
     ok, info = validate_url(url)
     if not ok:
-        raise ValueError(f"SSRF engeli: {info}")
-    headers = {"User-Agent": UA}
+        raise ValueError("SSRF engeli: {}".format(info))
+    parsed = urllib.parse.urlsplit(url)
+    host = parsed.hostname
+    if not host:
+        raise ValueError("SSRF engeli: host yok")
+    ips = _all_ips(host)
+    if not ips or any(not is_safe_ip(ip) for ip in ips):
+        raise ValueError("SSRF engeli: DNS sonucu değişti veya güvenli değil")
+    connect_ip = ips[0]
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    host_header = host if parsed.port is None else "{}:{}".format(host, parsed.port)
+    path = urllib.parse.urlunsplit(("", "", parsed.path or "/", parsed.query, ""))
+    headers = {"Host": host_header, "User-Agent": UA, "Accept-Encoding": "identity"}
     if referer:
         headers["Referer"] = referer
-    req = urllib.request.Request(url, headers=headers)
-    # NoRedirect None döndürdüğü için 3xx'ler HTTPError olarak yükselir -> engellenmiş olur
-    resp = _OPENER.open(req, timeout=timeout)
-    chunks, total = [], 0
-    while True:
-        block = resp.read(65536)
-        if not block:
-            break
-        total += len(block)
-        if total > max_bytes:
-            raise ValueError(f"boyut limiti aşıldı ({max_bytes // 1024 // 1024} MB)")
-        chunks.append(block)
-    return b"".join(chunks), f"HTTP {resp.status}"
+    conn_cls = _PinnedHTTPSConnection if parsed.scheme == "https" else _PinnedHTTPConnection
+    conn = conn_cls(connect_ip, host, port, timeout)
+    try:
+        conn.request("GET", path, headers=headers)
+        resp = conn.getresponse()
+        if 300 <= resp.status < 400:
+            raise ValueError("yönlendirme engellendi (HTTP {})".format(resp.status))
+        chunks, total = [], 0
+        while True:
+            block = resp.read(65536)
+            if not block:
+                break
+            total += len(block)
+            if total > max_bytes:
+                raise ValueError("boyut limiti aşıldı ({} MB)".format(max_bytes // 1024 // 1024))
+            chunks.append(block)
+        return b"".join(chunks), "HTTP {}".format(resp.status)
+    finally:
+        conn.close()
 
 
 # ===========================================================================
 # KONTROL 2 — Kaynak limitli sandbox yürütücüsü
 # ===========================================================================
-RUNTIME_ENABLED = os.environ.get("DEOBF_RUNTIME") == "1"
-
-
 def runtime_on() -> bool:
-    """Lua/çalışma-zamanlı yürütme aktif mi? DEOBF_RUNTIME=1 ve OWNER_ID ile güvenli hale getir.
-
-    Runtime aktivasyonu tek başına ortam değişkeni değil; sahip kimliği de tanımlı olmalıdır.
-    """
-    if not RUNTIME_ENABLED:
-        return False
-    if get_owner_id() is None:
-        logger.warning("DEOBF_RUNTIME=1 fakat OWNER_ID ayarlanmamis; runtime devre disi.")
-        return False
-    return True
+    """Güvenilmeyen Lua yürütmesi bu dağıtımda bilinçli olarak desteklenmez."""
+    return False
 
 
-def run_limited(cmd: list[str], input_text: str | None = None,
+def run_limited(cmd: List[str], input_text: Optional[str] = None,
                 timeout: int = 10, mem_mb: int = 256, cpu_sec: int = 8,
-                env: dict | None = None, limit_mem: bool = True):
+                env: Optional[Dict[str, str]] = None, limit_mem: bool = True):
     """Alt süreci dar kaynak limitleriyle (bellek/CPU/dosya) yürütür.
 
     Linux'ta preexec_fn ile RLIMIT_AS/CPU/FSIZE uygular. limit_mem=False ise
@@ -183,7 +206,7 @@ def run_limited(cmd: list[str], input_text: str | None = None,
 
 
 def run_lua_sandboxed(lua_exe: str, script_text: str, timeout: int = 10,
-                      mem_mb: int = 256, cpu_sec: int = 8) -> tuple[str, str, int]:
+                      mem_mb: int = 256, cpu_sec: int = 8) -> Tuple[str, str, int]:
     """Güvenilmeyen Lua kodunu izole geçici dosyada, dar limitlerle yürütür.
 
     Dönüş: (stdout, stderr_kuyruk, returncode). DEOBF_RUNTIME=1 değilse
@@ -215,7 +238,7 @@ def run_lua_sandboxed(lua_exe: str, script_text: str, timeout: int = 10,
 # ===========================================================================
 # KONTROL 3 — Yetki & hız sınırı
 # ===========================================================================
-def get_owner_id() -> int | None:
+def get_owner_id() -> Optional[int]:
     v = os.environ.get("OWNER_ID") or os.environ.get("DISCORD_OWNER_ID")
     try:
         return int(v) if v else None
@@ -233,7 +256,7 @@ def owner_or_manage_guild(ctx) -> bool:
     return False  # DM'de sadece owner
 
 
-def fetch_budget_ok(key: str, limit: int = 6, window: float = 60.0) -> tuple[bool, int]:
+def fetch_budget_ok(key: str, limit: int = 6, window: float = 60.0) -> Tuple[bool, int]:
     """Çok basit süreli istek bütçesi (kanal/URL başı). -> (izin, kalan).
 
     Bot süreci boyunca RAM'de tutulur; restart'ta sıfırlanır (kabul edilebilir).

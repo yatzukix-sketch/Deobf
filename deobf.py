@@ -11,6 +11,7 @@ import re
 import io
 import base64
 import logging
+from typing import Dict, Optional, Tuple
 
 import security
 
@@ -30,7 +31,7 @@ def fetch(url: str, timeout: int = 25) -> bytes:
     return data
 
 
-def smart_fetch(url: str, timeout: int = 25) -> tuple[bytes, str]:
+def smart_fetch(url: str, timeout: int = 25) -> Tuple[bytes, str]:
     """Akıllı GET: önce raw'a normalize eder, sonra güvenli getirir."""
     u2 = normalize_raw_url(url)
     referer = "/".join(u2.split("/")[:3]) + "/"
@@ -54,7 +55,7 @@ def normalize_raw_url(u: str) -> str:
 
 
 # ---------- katmanlı çözücü (Core) ----------
-def unhex(text: str) -> tuple[str, int]:
+def unhex(text: str) -> Tuple[str, int]:
     """Hex (\\xHH) ve ondalık (\\NNN) escape'leri çözer -> (metin, çözülen sayı).
 
     test_deobf.py ve eski arayanlar için açık API.
@@ -88,7 +89,7 @@ def unhex(text: str) -> tuple[str, int]:
     return out, n
 
 
-def recursive_deobf(text: str, max_depth: int = 5) -> tuple[str, int]:
+def recursive_deobf(text: str, max_depth: int = 5) -> Tuple[str, int]:
     """Kodun içindeki katmanları (hex, b64, escape) derinlemesine çözer.
 
     Sıkılaştırma: base64 yalnızca açıkça yürütülebilir LUA içeriğine işaret
@@ -139,7 +140,7 @@ def recursive_deobf(text: str, max_depth: int = 5) -> tuple[str, int]:
 
 
 # ---------- WRD çözücü ----------
-def wrd_full_deobf(text: str) -> tuple[str, dict]:
+def wrd_full_deobf(text: str) -> Tuple[str, Dict]:
     info: dict = {"engine": "WRD-Advanced"}
     if "wearedevs.net/obfuscator" not in text:
         return text, {}
@@ -180,23 +181,17 @@ def wrd_full_deobf(text: str) -> tuple[str, dict]:
 
 
 # ---------- ANA PİPELİNE ----------
-def deobf_pipeline(name: str, content: bytes) -> tuple[str, dict[str, bytes]]:
+def deobf_pipeline(name: str, content: bytes):
     text = content.decode("utf-8", "replace")
-    outputs: dict[str, bytes] = {}
+    outputs = {}
     report = ["# DEOBF ANALİZ RAPORU v2.1"]
 
     if "wearedevs.net/obfuscator" in text:
         text, winfo = wrd_full_deobf(text)
         report.append(f"- WRD Tespiti: {winfo.get('strings_found', 0)} sabit çözüldü.")
 
-    # Runtime (Lua) yalnızca DEOBF_RUNTIME=1 ile; aksi halde atlanır (güvenli)
-    import deobfuscator
-    runtime_code = deobfuscator.deobfuscate_runtime(text)
-    if runtime_code:
-        text += runtime_code
-        report.append("- Dinamik Analiz: Bellekten gizli kod parçaları yakalandı.")
-    else:
-        report.append("- Dinamik Analiz: kapalı (DEOBF_RUNTIME=1 ile açılır).")
+    # Güvenilmeyen Lua yürütmesi kaldırıldı; yalnızca statik analiz yapılır.
+    report.append("- Dinamik Analiz: güvenlik nedeniyle devre dışı; yalnızca statik analiz yapıldı.")
 
     text, changes = recursive_deobf(text)
     if changes > 0:
@@ -220,7 +215,7 @@ def deobf_pipeline(name: str, content: bytes) -> tuple[str, dict[str, bytes]]:
 
 
 # ---------- yardımcılar ----------
-def find_megastring(text: str) -> str | None:
+def find_megastring(text: str) -> Optional[str]:
     best = None
     for m in re.finditer(r'"((?:[^"\\]|\\.){40000,})"', text):
         best = m.group(1) if best is None or len(m.group(1)) > len(best) else best
@@ -258,7 +253,7 @@ def _unescape_lua(s: str) -> str:
     return out.getvalue()
 
 
-def xsub_decode(blob: str) -> bytes | None:
+def xsub_decode(blob: str) -> Optional[bytes]:
     raw = blob if not blob.startswith(("LPH+", "LPH-")) else blob[4:]
     raw = "".join(ch for ch in raw if 33 <= ord(ch) <= 126)
     raw = raw[: len(raw) - len(raw) % 5]
@@ -276,7 +271,7 @@ def xsub_decode(blob: str) -> bytes | None:
     return bytes(out)
 
 
-def extract_xsub(text: str) -> tuple[bytes | None, dict]:
+def extract_xsub(text: str) -> Tuple[Optional[bytes], Dict]:
     info: dict = {}
     mega = find_megastring(text)
     if not mega:

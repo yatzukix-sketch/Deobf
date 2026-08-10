@@ -74,42 +74,8 @@ getgenv = function() return _G end
 
 
 def deobfuscate_runtime(content: str) -> str:
-    """Scripti emüle ederek içindeki çözülmüş stringleri yakalar.
-
-    DEOBF_RUNTIME=1 değilse hemen boş döner (güvenli mod). Açıksa kod,
-    security.run_lua_sandboxed ile bellek/CPU limitli sandbox'ta yürütülür.
-    """
-    try:
-        import security
-    except Exception as e:  # noqa: BLE001
-        logger.error(f"security modülü yok, runtime kapatıldı: {e}")
-        return ""
-
-    if not security.runtime_on():
-        logger.info("runtime deobf atlandı (DEOBF_RUNTIME != 1)")
-        return ""
-
-    if not content or len(content) > 2 * 1024 * 1024:
-        logger.warning("runtime: içerik boş/çok büyük, atlandı")
-        return ""
-
-    full_code = _MOCK_ENV + "\n-- TARGET SCRIPT --\n" + content
-    try:
-        stdout, stderr, rc = security.run_lua_sandboxed(
-            get_lua_executable(), full_code, timeout=10, mem_mb=256, cpu_sec=8
-        )
-    except PermissionError:
-        return ""
-    except FileNotFoundError as e:
-        logger.error(f"lua yorumlayıcı yok: {e}")
-        return ""
-
-    captured = re.findall(r"--- CAPTURED_START ---\n(.*?)\n--- CAPTURED_END ---",
-                          stdout, re.S)
-    if captured:
-        return "\n\n-- [DİNAMİK ÇÖZÜLEN KATMANLAR] --\n\n" + "\n\n".join(captured)
-    if rc != 0:
-        logger.warning(f"runtime lua rc={rc}: {stderr[:120]}")
+    """Güvenilmeyen Lua kodunu çalıştırma özelliği güvenlik nedeniyle kaldırıldı."""
+    logger.info("runtime deobf atlandı: güvenilmeyen Lua yürütmesi desteklenmiyor")
     return ""
 
 
