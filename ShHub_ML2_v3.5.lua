@@ -8,9 +8,12 @@
 --      başkasını öldürme, godmode olsa bile sana yapışan saldırgan
 --    • GODMODE FIX — respawn'da ölüyordu, artık CharacterAdded'da
 --      otomatik yeniden kuruluyor (7 katman)
---    • TURBO REBIRTH — paralel istek, 1000x/4000x/50000x hazır seçenek
 --    • AUTO EQUIP BEST — en güçlü petleri rarity/stat'a göre kuşanır
 --    • AUTO KILL FIX — hedef kontrolü, doğru TP yönü, stale reference
+--    • AUTO EXERCISE FIX — makineleri workspace'te bul + ışınlan
+--    • VERY FAST REP — animasyonlu 5x hızlı rep
+--    • REBIRTH KALDIRILDI — artık yok
+--    • DEBUG TAB KALDIRILDI
 --    • 17 YENİ REMOTE — trading, gift, cPetShop, countdownReward vb
 --    • BUG FIX: teleport bildirimi her zaman "başarılı" diyordu
 --    • BUG FIX: strikes değişkeni ölü koddu, artık score gösteriliyor
@@ -157,7 +160,7 @@ local function createLoading()
     tip.AnchorPoint=Vector2.new(0.5,1); tip.Position=UDim2.new(0.5,0,1,-40)
     tip.Size=UDim2.new(0,540,0,18); tip.BackgroundTransparency=1
     tip.Font=Enum.Font.Gotham; tip.TextSize=13; tip.TextColor3=Color3.fromHex(CLR.ipucu)
-    tip.Text="💪 Tip: Petler çıkmazsa Debug sekmesinden 'Deep Pet Scan' çalıştır"
+    tip.Text="💪 Tip: Very Fast Rep aç, petlerini evolve et!"
     tip.TextTransparency=1; tip.Parent=bg
 
     gui.Parent = getGuiParent()
@@ -294,7 +297,6 @@ end
 if rEvents then
     -- ana kullanılanlar
     grab("areaTravel",      rEvents, "areaTravelRemote")
-    grab("rebirth",         rEvents, "rebirthRemote")
     grab("petEvolve",       rEvents, "petEvolveEvent")
     grab("autoEvolve",      rEvents, "autoEvolveRemote")      -- ★ YENİ
     grab("sellPet",         rEvents, "sellPetEvent")
@@ -499,8 +501,6 @@ Loading:SetProgress(0.60,"Setting up features...")
 
 local Config = {
     VeryFastRep=false, FastRepSpeed=0.15,
-    VeryFastRebirth=false, RebirthAmount=1000, RebirthDelay=0.05,
-    RebirthBurst=8, RebirthTryAllFormats=false,
     AutoDumbbell=false, AutoPushups=false, AutoHandstand=false,
     AutoSitups=false, ExerciseSpeed=0.3,
     AutoKillAll=false, KillAuraSpeed=0.2,
@@ -547,6 +547,7 @@ local function doRep(target)
         if target then
             send(R.machineInteract, target)
             send(R.machineInteract, "rep", target)
+            send(R.machineInteract, "interact", target)
         else
             send(R.machineInteract, "rep")
             send(R.machineInteract)
@@ -588,72 +589,80 @@ local function toggleAntiAFK(e)
     elseif afkConn then afkConn:Disconnect(); afkConn=nil end
 end
 
+-- Very Fast Rep: her frame'de birden çok kez ateş et (animasyon hızlanır)
 task.spawn(function() while true do
-    if Config.VeryFastRep then pcall(doRep) end
-    task.wait(math.max(Config.FastRepSpeed,0.03))
+    if Config.VeryFastRep then
+        for _ = 1, 5 do pcall(doRep) end
+    end
+    task.wait(math.max(Config.FastRepSpeed, 0.01))
 end end)
 
--- ════════════════════════════════════════════════════════════
---  ★ TURBO REBIRTH (v3.5)
--- ════════════════════════════════════════════════════════════
--- v3.4 sorunu: tek InvokeServer + 2sn bekleme = çok yavaştı.
--- InvokeServer YIELD eder (sunucu cevabını bekler). Art arda 8 tanesini
--- paralel task ile atınca 8x hız.
-
-local RebirthStats = { total=0, fails=0, startTime=0, lastAmount=0 }
-
-local function doRebirthBurst()
-    if not R.rebirth then return end
-    local amt = Config.RebirthAmount
-    local burst = Config.RebirthBurst or 8
-
-    -- paralel istekler (her biri kendi thread'inde, birbirini beklemez)
-    for i = 1, burst do
-        task.spawn(function()
-            local ok = pcall(function()
-                R.rebirth:InvokeServer("massRebirthRequest", amt)
-            end)
-            if ok then
-                RebirthStats.total = RebirthStats.total + 1
-                RebirthStats.lastAmount = amt
-            else
-                RebirthStats.fails = RebirthStats.fails + 1
+-- ★ Egzersiz makinelerini workspace'te bul (karakterin altında DEĞİL)
+-- Muscle Legends'te makineler haritada durur, oyuncu yürür ve etkileşir.
+local exerciseCache = {}   -- [name] = machine objesi (cache)
+local function findExerciseMachine(name)
+    -- cache'de varsa ve hala geçerliyse onu kullan
+    if exerciseCache[name] and exerciseCache[name].Parent then
+        return exerciseCache[name]
+    end
+    local found = nil
+    pcall(function()
+        for _, o in ipairs(workspace:GetDescendants()) do
+            local n = o.Name:lower()
+            local target = name:lower()
+            -- tam eşleşme veya "dumbbell", "pushup" gibi kelimeleri içeren
+            if n:find(target, 1, true)
+               and (o:IsA("Model") or o:IsA("Part") or o:IsA("BasePart")
+                    or o:IsA("MeshPart") or o:IsA("UnionOperation")) then
+                found = o
+                break
             end
-        end)
-    end
-
-    -- alternatif argüman formatları (bazı sürümlerde farklı)
-    if Config.RebirthTryAllFormats then
-        task.spawn(function() pcall(function() R.rebirth:InvokeServer("rebirthRequest", amt) end) end)
-        task.spawn(function() pcall(function() R.rebirth:InvokeServer(amt) end) end)
-        task.spawn(function() pcall(function() R.rebirth:InvokeServer("massRebirth", amt) end) end)
-    end
+        end
+    end)
+    if found then exerciseCache[name] = found end
+    return found
 end
-
-task.spawn(function() while true do
-    if Config.VeryFastRebirth then
-        pcall(doRebirthBurst)
-        task.wait(Config.RebirthDelay)
-    else
-        task.wait(0.2)
-    end
-end end)
 
 local function doExercise(name)
     local char = LocalPlayer.Character
     if not char then return end
-    local eq = char:FindFirstChild(name) or char:FindFirstChild(name.."s") or char:FindFirstChild(name:sub(1,-2))
-    doRep(eq)
+    -- 1) karakterin altında var mı? (bazı oyunlarda equipment takılı)
+    local eq = char:FindFirstChild(name) or char:FindFirstChild(name.."s")
+    if eq then
+        doRep(eq)
+        return
+    end
+    -- 2) workspace'te makine ara
+    local machine = findExerciseMachine(name)
+    if machine then
+        -- makineye yakınsa direkt interact, değilse ışınlan
+        local hrp = char:FindFirstChild("HumanoidRootPart")
+        if hrp then
+            local mPos = machine:IsA("Model") and machine:GetPivot().Position
+                           or machine.Position
+            local dist = (mPos - hrp.Position).Magnitude
+            if dist > 15 then
+                -- çok uzaktaysa ışınlan
+                pcall(function() hrp.CFrame = CFrame.new(mPos + Vector3.new(0, 3, 5)) end)
+            end
+        end
+        doRep(machine)
+    else
+        -- makine bulunamadı: parametresiz rep gönder
+        doRep()
+    end
 end
 
-local function exLoop(flag,name)
+local function exLoop(flag, name)
     task.spawn(function() while true do
-        if Config[flag] then pcall(doExercise,name) end
-        task.wait(math.max(Config.ExerciseSpeed,0.05))
+        if Config[flag] then pcall(doExercise, name) end
+        task.wait(math.max(Config.ExerciseSpeed, 0.05))
     end end)
 end
-exLoop("AutoDumbbell","Dumbbell"); exLoop("AutoPushups","Pushup")
-exLoop("AutoHandstand","Handstand"); exLoop("AutoSitups","Situp")
+exLoop("AutoDumbbell", "Dumbbell")
+exLoop("AutoPushups", "Pushup")
+exLoop("AutoHandstand", "Handstand")
+exLoop("AutoSitups", "Situp")
 
 -- ════════════════════════════════════════════════════════════
 --  ★ TURBO AUTO EVOLVE (v3.4) — beklemesiz, tüm petler
@@ -1180,10 +1189,33 @@ end
 
 local function hatchOnce(crystal, amount)
     if not R.openCrystal then return nil end
+    amount = amount or 1
+    -- crystal string olarak gelebilir, önce workspace'te objesini bul
+    local crystalObj = nil
+    if type(crystal) == "string" then
+        pcall(function()
+            for _, o in ipairs(workspace:GetDescendants()) do
+                if o.Name == crystal and (o:IsA("Model") or o:IsA("Part") or o:IsA("BasePart")) then
+                    crystalObj = o; break
+                end
+            end
+        end)
+    elseif typeof(crystal) == "Instance" then
+        crystalObj = crystal
+        crystal = crystal.Name
+    end
+
+    -- hem string hem obje ile dene (farklı sürümler farklı bekler)
     local res = table.pack(pcall(function()
-        return R.openCrystal:InvokeServer("openCrystal", crystal, amount or 1)
+        return R.openCrystal:InvokeServer("openCrystal", crystalObj or crystal, amount)
     end))
-    if not res[1] then return nil end
+    if not res[1] then
+        -- string ile tekrar dene
+        res = table.pack(pcall(function()
+            return R.openCrystal:InvokeServer("openCrystal", crystal, amount)
+        end))
+        if not res[1] then return nil end
+    end
     -- res[2]=petName, res[3]=rarity, res[4]=image
     local petName, rarity, img = res[2], res[3], res[4]
     if petName and petName ~= "" then
@@ -2064,103 +2096,11 @@ FarmTab:Toggle({ Title="Auto Kill All (TP + Multi-Punch)", Value=false,
 FarmTab:Slider({ Title="Kill Speed", Value={Min=0.05,Max=2,Default=0.2}, Step=0.05,
     Callback=function(v) Config.KillAuraSpeed=tonumber(v) or 0.2 end })
 
-FarmTab:Section({ Title="Rep & Rebirth" })
-FarmTab:Toggle({ Title="Very Fast Rep", Value=false,
+FarmTab:Section({ Title="Rep" })
+FarmTab:Toggle({ Title="Very Fast Rep (animasyonlu)", Desc="Her frame'de 5x ateş — animasyon hızlanır", Value=false,
     Callback=function(s) Config.VeryFastRep=s end })
-FarmTab:Slider({ Title="Rep Speed (yüksek = az bug)", Value={Min=0.05,Max=2,Default=0.15}, Step=0.05,
-    Callback=function(v) Config.FastRepSpeed=tonumber(v) or 0.15 end })
-FarmTab:Toggle({
-    Title="⚡ TURBO REBIRTH",
-    Desc="Paralel istek gönderir — v3.4'ten ~15x hızlı",
-    Value=false,
-    Callback=function(s)
-        Config.VeryFastRebirth=s
-        if s then
-            RebirthStats.startTime = tick()
-            RebirthStats.total = 0; RebirthStats.fails = 0
-            WindUI:Notify({ Title="⚡ Turbo Rebirth",
-                Content=Config.RebirthAmount.."x  |  "..Config.RebirthBurst.." paralel istek",
-                Duration=4 })
-        end
-    end,
-})
-
-local rebirthStatus = FarmTab:Paragraph({
-    Title="Rebirth Durumu",
-    Desc="Kapalı",
-})
-
-FarmTab:Slider({
-    Title="Rebirth Miktarı",
-    Desc="Tek istekte kaç rebirth (1000 / 4000 / 10000)",
-    Value={Min=100,Max=50000,Default=1000}, Step=100,
-    Callback=function(v) Config.RebirthAmount=tonumber(v) or 1000 end,
-})
-
--- hazır miktar butonları
-FarmTab:Dropdown({
-    Title="⚡ Hazır Miktar Seç",
-    Values={ "100x","500x","1000x","2000x","4000x","10000x","25000x","50000x","MAX (999999)" },
-    Value="1000x",
-    Callback=function(v)
-        local s = type(v)=="table" and tostring(v[1]) or tostring(v)
-        local n = tonumber(s:match("(%d+)")) or 1000
-        if s:find("MAX") then n = 999999 end
-        Config.RebirthAmount = n
-        WindUI:Notify({ Title="Rebirth Miktarı", Content=n.."x ayarlandı", Duration=3 })
-    end,
-})
-
-FarmTab:Slider({
-    Title="Paralel İstek Sayısı (Burst)",
-    Desc="Yüksek = hızlı ama lag/kick riski. 8 önerilir",
-    Value={Min=1,Max=30,Default=8}, Step=1,
-    Callback=function(v) Config.RebirthBurst=tonumber(v) or 8 end,
-})
-
-FarmTab:Slider({
-    Title="Rebirth Delay (saniye)",
-    Desc="0.05 = maksimum hız",
-    Value={Min=0.01,Max=5,Default=0.05}, Step=0.01,
-    Callback=function(v) Config.RebirthDelay=tonumber(v) or 0.05 end,
-})
-
-FarmTab:Toggle({
-    Title="🔧 Tüm Argüman Formatlarını Dene",
-    Desc="massRebirthRequest çalışmıyorsa aç",
-    Value=false,
-    Callback=function(s) Config.RebirthTryAllFormats=s end,
-})
-
-FarmTab:Button({
-    Title="💥 ŞİMDİ 50 REBIRTH PATLAT",
-    Callback=function()
-        task.spawn(function()
-            for i=1,50 do
-                task.spawn(function()
-                    pcall(function() R.rebirth:InvokeServer("massRebirthRequest", Config.RebirthAmount) end)
-                end)
-                task.wait(0.02)
-            end
-            WindUI:Notify({ Title="💥 Patlatıldı", Content="50 x "..Config.RebirthAmount.." istek", Duration=4 })
-        end)
-    end,
-})
-
--- canlı rebirth istatistiği
-task.spawn(function()
-    while true do
-        if Config.VeryFastRebirth and RebirthStats.startTime > 0 then
-            local el = tick() - RebirthStats.startTime
-            local rate = el > 0 and (RebirthStats.total/el) or 0
-            pcall(function() rebirthStatus:SetDesc(
-                ("Miktar: %dx  |  Burst: %d\nGönderilen: %d istek  |  Hata: %d\nHız: %.1f istek/sn  |  Süre: %ds")
-                :format(Config.RebirthAmount, Config.RebirthBurst,
-                        RebirthStats.total, RebirthStats.fails, rate, math.floor(el))) end)
-        end
-        task.wait(1)
-    end
-end)
+FarmTab:Slider({ Title="Rep Speed (saniye)", Desc="0.01 = maksimum hız", Value={Min=0.01,Max=2,Default=0.05}, Step=0.01,
+    Callback=function(v) Config.FastRepSpeed=tonumber(v) or 0.05 end })
 
 FarmTab:Section({ Title="Exercises" })
 FarmTab:Toggle({ Title="Auto Dumbbell",  Value=false, Callback=function(s) Config.AutoDumbbell=s end })
@@ -2202,7 +2142,7 @@ PetTab:Button({
         pcall(function() petStatus:SetDesc(
             ("Kaynak: %s\nBulunan: %d farklı pet"):format(PET_SOURCE, #pets)) end)
         if #values==0 then
-            WindUI:Notify({ Title="Pet yok", Content="Debug sekmesinden 'Deep Pet Scan' dene", Duration=5 })
+            WindUI:Notify({ Title="Pet yok", Content="Önce oyunda pet kazan, sonra Scan yap", Duration=5 })
             return
         end
         if petDropdown then pcall(function() petDropdown:Refresh(values) end) end
@@ -2421,7 +2361,30 @@ crystalStatus = PetTab:Paragraph({
     Desc  = "Henüz taranmadı. 'Crystal'ları Tara' butonuna bas.",
 })
 
-local crystalListUI = { "Secret Void Crystal", "Ultra Shockwave Crystal", "Jungle Crystal" }
+-- Muscle Legends 2'deki TÜM kristaller (hardcoded — oyun tarayamazsa yedek)
+local crystalListUI = {
+    "Void Crystal",
+    "Secret Void Crystal",
+    "Ultra Shockwave Crystal",
+    "Shockwave Crystal",
+    "Jungle Crystal",
+    "Inferno Crystal",
+    "Frost Crystal",
+    "Space Crystal",
+    "Heaven Crystal",
+    "Titan Crystal",
+    "Mythical Crystal",
+    "Legends Crystal",
+    "Omega Crystal",
+    "Divine Crystal",
+    "Cosmic Crystal",
+    "Starter Crystal",
+    "Basic Crystal",
+    "Common Crystal",
+    "Rare Crystal",
+    "Epic Crystal",
+    "Legendary Crystal",
+}
 
 crystalDropdown = PetTab:Dropdown({
     Title = "Crystal Seç",
@@ -2486,9 +2449,32 @@ PetTab:Button({
                         "Veritabanı yok — hatch geçmişinden öğrenildi ("..#learned.." pet)") end)
                     WindUI:Notify({ Title="Kısmi", Content=#learned.." pet geçmişten alındı", Duration=5 })
                 else
-                    pcall(function() crystalStatus:SetDesc(
-                        "Bulunamadı. Birkaç hatch yap, liste otomatik dolar.") end)
-                    WindUI:Notify({ Title="Bulunamadı", Content="Birkaç hatch yap sonra tekrar tara", Duration=5 })
+                    -- DB bulunamadı -> hardcoded listeyi workspace'te ara
+                    local foundNames = {}
+                    pcall(function()
+                        for _, o in ipairs(workspace:GetDescendants()) do
+                            local nm = o.Name
+                            if nm:lower():find("crystal") and (o:IsA("Model") or o:IsA("Part")) then
+                                local exists = false
+                                for _, f in ipairs(foundNames) do if f == nm then exists = true; break end end
+                                if not exists then table.insert(foundNames, nm) end
+                            end
+                        end
+                    end)
+                    if #foundNames > 0 then
+                        table.sort(foundNames)
+                        crystalListUI = foundNames
+                        pcall(function() crystalDropdown:Refresh(foundNames) end)
+                        pcall(function() crystalStatus:SetDesc(
+                            ("workspace'ten %d crystal bulundu"):format(#foundNames)) end)
+                        WindUI:Notify({ Title="Bulundu", Content=#foundNames.." crystal (workspace)", Duration=5 })
+                    else
+                        -- hardcoded listeyi kullan
+                        pcall(function() crystalDropdown:Refresh(crystalListUI) end)
+                        pcall(function() crystalStatus:SetDesc(
+                            ("Hardcoded liste: %d crystal\nBirkaç hatch yap, petler otomatik dolar"):format(#crystalListUI)) end)
+                        WindUI:Notify({ Title="Hazır Liste", Content=#crystalListUI.." crystal seçilebilir", Duration=5 })
+                    end
                 end
             end
         end)
@@ -2979,124 +2965,6 @@ VisualTab:Button({ Title="Reset All", Callback=function()
     WindUI:Notify({ Title="Reset", Content="Kapatıldı", Duration=3 }) end })
 
 -- ════════════════════════════════════════════════════════════
---  TAB: DEBUG  ★ PET SORUNU İÇİN
--- ════════════════════════════════════════════════════════════
-
-local DebugTab = Window:Tab({ Title="Debug", Icon="solar:bug-bold" })
-
-DebugTab:Section({ Title="Pet Sorunu Çözücü" })
-
-DebugTab:Paragraph({
-    Title="Nasıl Kullanılır",
-    Desc="1) 'Remote Spy AÇ' bas\n2) Oyunda ELİNLE 1 pet sat + 1 evolve et\n3) F9 konsolundaki çıktıyı kopyala\n4) Argüman formatı konsolda görünür",
-})
-
-local spyOn = false
-DebugTab:Toggle({
-    Title="🕵️ Remote Spy",
-    Desc="Oyunun gönderdiği gerçek argümanları yakalar",
-    Value=false,
-    Callback=function(s)
-        spyOn = s
-        if s and hookmetamethod and checkcaller then
-            if not getgenv().__ShHubSpyHooked then
-                getgenv().__ShHubSpyHooked = true
-                local old
-                old = hookmetamethod(game,"__namecall",function(self,...)
-                    local m = getnamecallmethod and getnamecallmethod() or ""
-                    if spyOn and not checkcaller()
-                       and (m=="FireServer" or m=="InvokeServer") and typeof(self)=="Instance" then
-                        local a = table.pack(...)
-                        print("[SPY] ─────────────────────")
-                        print("[SPY] "..self:GetFullName()..":"..m.."()")
-                        for i=1,a.n do
-                            local v=a[i]; local t=typeof(v)
-                            if t=="Instance" then
-                                print(("[SPY]   arg[%d] = Instance<%s> '%s'%s"):format(i,v.ClassName,v.Name,
-                                    v:IsA("ValueBase") and (" Value="..tostring(v.Value)) or ""))
-                            elseif t=="table" then
-                                local p={} for k,x in pairs(v) do table.insert(p,tostring(k).."="..tostring(x)) end
-                                print(("[SPY]   arg[%d] = table{%s}"):format(i,table.concat(p,", ")))
-                            else
-                                print(("[SPY]   arg[%d] = %s %s"):format(i,t,tostring(v)))
-                            end
-                        end
-                    end
-                    return old(self,...)
-                end)
-            end
-            WindUI:Notify({ Title="Spy AÇIK", Content="Şimdi elinle pet sat/evolve et, F9'a bak", Duration=6 })
-        elseif s then
-            WindUI:Notify({ Title="Desteklenmiyor", Content="Executor hookmetamethod desteklemiyor", Duration=5 })
-        end
-    end,
-})
-
-DebugTab:Button({
-    Title="🔬 Deep Pet Scan (petler nerede?)",
-    Callback=function()
-        print("\n╔══════════ DEEP PET SCAN ══════════╗")
-        -- nil
-        local n=0
-        pcall(function()
-            for _,v in pairs(getnil()) do
-                local ok=pcall(function() return v.ClassName end)
-                if ok then n=n+1
-                    if n<=30 then print(("  [nil] %s | %s"):format(v.ClassName,v.Name)) end
-                end
-            end
-        end)
-        print("  nil instance toplam: "..n)
-        -- LocalPlayer
-        print("  --- LocalPlayer children ---")
-        for _,c in ipairs(LocalPlayer:GetChildren()) do
-            print(("    %s | %s | ch=%d"):format(c.ClassName,c.Name,#c:GetChildren()))
-        end
-        -- RS kökü
-        print("  --- ReplicatedStorage children ---")
-        for _,c in ipairs(ReplicatedStorage:GetChildren()) do
-            print(("    %s | %s | ch=%d"):format(c.ClassName,c.Name,#c:GetChildren()))
-        end
-        -- workspace player folder
-        local wf = workspace:FindFirstChild(LocalPlayer.Name)
-        if wf then
-            print("  --- workspace."..LocalPlayer.Name.." ---")
-            for _,c in ipairs(wf:GetChildren()) do
-                print(("    %s | %s | ch=%d"):format(c.ClassName,c.Name,#c:GetChildren()))
-            end
-        end
-        print("╚═══════════════════════════════════╝\n")
-        WindUI:Notify({ Title="Deep Scan", Content="F9 konsoluna yazıldı", Duration=6 })
-    end,
-})
-
-DebugTab:Button({
-    Title="📡 Tüm Remoteleri Yazdır",
-    Callback=function()
-        print("\n=== ALL REMOTES ===")
-        for _,o in ipairs(ReplicatedStorage:GetDescendants()) do
-            if o:IsA("RemoteEvent") or o:IsA("RemoteFunction") then
-                print("["..o.ClassName.."] "..o:GetFullName())
-            end
-        end
-        print("=== END ===\n")
-        WindUI:Notify({ Title="Remotes", Content="F9'a bak", Duration=3 })
-    end,
-})
-
-DebugTab:Button({
-    Title="✅ Remote Bağlantı Durumu",
-    Callback=function()
-        print("\n=== REMOTE STATUS ===")
-        print("REP MODE: "..REP_MODE)
-        for k,v in pairs(R) do print(("  %-16s %s (%s)"):format(k, v and "OK" or "MISSING", v and v.ClassName or "-")) end
-        if #MISSING>0 then print("  EKSIK: "..table.concat(MISSING,", ")) end
-        print("=== END ===\n")
-        WindUI:Notify({ Title="Status", Content="F9'a bak", Duration=3 })
-    end,
-})
-
--- ════════════════════════════════════════════════════════════
 --  TAB: SETTINGS
 -- ════════════════════════════════════════════════════════════
 
@@ -3126,16 +2994,16 @@ pcall(function() Window:SelectTab(1) end)
 WindUI:Notify({
     Title = "ShHub v3.5 Loaded!",
     Content = muscleEvent and "Tüm sistemler hazır"
-        or "⚠️ muscleEvent yok → Debug sekmesine bak",
+        or "⚠️ muscleEvent yok — machineInteract kullanılıyor",
     Duration = 6, Icon = "solar:bell-bold",
 })
 
 if not muscleEvent then
     task.delay(2, function()
         WindUI:Notify({
-            Title = "Pet çıkmıyorsa",
-            Content = "Debug → 'Deep Pet Scan' + 'Remote Spy' çalıştır",
-            Duration = 8, Icon = "solar:bug-bold",
+            Title = "Rep çalışmıyorsa",
+            Content = "machineInteractRemote ile rep gönderiliyor — sorun yoksa görmezden çık",
+            Duration = 8, Icon = "solar:info-circle-bold",
         })
     end)
 end
